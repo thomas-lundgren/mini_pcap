@@ -1,6 +1,6 @@
 # Low-Overhead Capture: Architecture, Benchmarks and Acceptance Gates
 
-**Status:** PROPOSED — design only; no device implementation or performance results exist.  
+**Status:** P0/P1 measured on Pixel 9 Pro (Android 17) — results in `docs/TEST_RESULTS.md` §5; P2 open.  
 **Owner:** Performance/measurement agent, reviewed independently by coordinator and native-capture agent.  
 **Applies to:** Android API 29+, native `VpnService`/TUN data plane, PCAPNG snaplen capture, UID attribution, UI notification, upload.
 

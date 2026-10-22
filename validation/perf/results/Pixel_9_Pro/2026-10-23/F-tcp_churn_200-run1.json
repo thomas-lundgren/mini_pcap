@@ -1,0 +1,82 @@
+{
+ "variant": "F",
+ "workload": {
+  "name": "tcp_churn_200",
+  "kind": "churn",
+  "count": 200
+ },
+ "run": 1,
+ "utc": "2026-10-22T22:15:06.077509+00:00",
+ "wall_s": 1.458,
+ "nettool": {
+  "test": "churn",
+  "count": 200,
+  "ok": 200,
+  "failed": 0,
+  "seconds": 1.435,
+  "conn_rr_us_p50": 6769,
+  "conn_rr_us_p95": 9617,
+  "conn_rr_us_p99": 11428,
+  "client_cpu_ms": 58.6
+ },
+ "iface": "tun0",
+ "iface_delta": {
+  "rx_bytes": 54400,
+  "rx_packets": 1000,
+  "tx_bytes": 73800,
+  "tx_packets": 1400
+ },
+ "iface_packets": 2400,
+ "app_cpu_ms": 180.0,
+ "app_threads_cpu_ms": {
+  "dev.minipcap": 10.0,
+  "Jit thread pool": 10.0,
+  "RenderThread": 10.0,
+  "capture-status": 10.0,
+  "mpc-engine": 100.0,
+  "uid-resolver": 50.0
+ },
+ "app_cpu_ms_per_million_tun_packets": 75000.0,
+ "system_busy_ms": 14840.0,
+ "system_busy_ms_per_million_packets": 6183333.3,
+ "env_before": {
+  "battery_level": "46",
+  "battery_temp_dC": "313",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "33.267254",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ },
+ "env_after": {
+  "battery_level": "46",
+  "battery_temp_dC": "328",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "33.336357",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ }
+}

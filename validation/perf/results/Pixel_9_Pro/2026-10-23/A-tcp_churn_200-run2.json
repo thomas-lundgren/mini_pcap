@@ -1,0 +1,75 @@
+{
+ "variant": "A",
+ "workload": {
+  "name": "tcp_churn_200",
+  "kind": "churn",
+  "count": 200
+ },
+ "run": 2,
+ "utc": "2026-10-22T22:22:23.637632+00:00",
+ "wall_s": 1.709,
+ "nettool": {
+  "test": "churn",
+  "count": 200,
+  "ok": 200,
+  "failed": 0,
+  "seconds": 1.67,
+  "conn_rr_us_p50": 7815,
+  "conn_rr_us_p95": 11403,
+  "conn_rr_us_p99": 14241,
+  "client_cpu_ms": 125.2
+ },
+ "iface": "wlan0",
+ "iface_delta": {
+  "rx_bytes": 67570,
+  "rx_packets": 1009,
+  "tx_bytes": 108342,
+  "tx_packets": 1404
+ },
+ "iface_packets": 2413,
+ "app_cpu_ms": 0.0,
+ "app_threads_cpu_ms": {},
+ "app_cpu_ms_per_million_tun_packets": null,
+ "system_busy_ms": 3350.0,
+ "system_busy_ms_per_million_packets": 1388313.3,
+ "env_before": {
+  "battery_level": "45",
+  "battery_temp_dC": "351",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "36.519077",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ },
+ "env_after": {
+  "battery_level": "45",
+  "battery_temp_dC": "351",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "36.482674",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ }
+}

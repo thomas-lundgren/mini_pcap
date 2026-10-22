@@ -1,0 +1,1365 @@
+{
+  "schema_version": 1,
+  "capture_id": "904e66d9-4437-4814-a161-178f2185b10a",
+  "capture_file": "904e66d9-4437-4814-a161-178f2185b10a.pcapng",
+  "status": "complete",
+  "started_utc": "2026-10-22T22:13:56.315Z",
+  "ended_utc": "2026-10-22T22:15:10.948Z",
+  "capture_point": "android_vpn_tun",
+  "timestamp_unit": "microseconds_since_unix_epoch",
+  "timestamp_source": "CLOCK_BOOTTIME at capture point, converted with one boottime\/realtime anchor",
+  "clock_anchors": {
+    "boottime_ns": 232034167267471,
+    "realtime_ns": 1792707236331062906
+  },
+  "snaplen_bytes": 256,
+  "snaplen_mode": "prefix",
+  "mtu": 1500,
+  "linktype": "LINKTYPE_RAW(101)",
+  "direction_encoding": {
+    "epb_flags_outbound": "UPLINK (app -> network)",
+    "epb_flags_inbound": "DOWNLINK (network -> app)"
+  },
+  "comment_grammar": "f-<flow_id> | u-<uid>;f-<flow_id>; no comment = no flow (flow_id 0)",
+  "filter": {
+    "mode": "include",
+    "packages": [
+      "com.android.shell"
+    ],
+    "missing_packages": [],
+    "self_excluded": true
+  },
+  "uid_map": {
+    "2000": {
+      "packages": [
+        "com.android.shell"
+      ],
+      "app_names": [
+        "Skal"
+      ],
+      "class": "system",
+      "class_source": "uid_range"
+    }
+  },
+  "flow_uid_map": {
+    "1": {
+      "uid": null,
+      "resolution": "unresolved_invalid_uid",
+      "lookup_attempts": 5,
+      "resolve_latency_ms": 2045
+    },
+    "2": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 4
+    },
+    "3": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 3
+    },
+    "4": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "5": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "6": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "7": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "8": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "9": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "10": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "11": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "12": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "13": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "14": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "15": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "16": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "17": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "18": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "19": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "20": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "21": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "22": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "23": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "24": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "25": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "26": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "27": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "28": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "29": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "30": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "31": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "32": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "33": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "34": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "35": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "36": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 3
+    },
+    "37": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "38": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "39": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "40": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "41": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "42": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "43": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "44": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "45": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "46": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "47": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "48": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "49": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "50": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "51": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "52": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 5
+    },
+    "53": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "54": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 4
+    },
+    "55": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "56": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "57": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "58": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "59": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "60": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "61": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "62": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "63": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "64": {
+      "uid": null,
+      "resolution": "unresolved_invalid_uid",
+      "lookup_attempts": 5,
+      "resolve_latency_ms": 2036
+    },
+    "65": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 4
+    },
+    "66": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "67": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "68": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "69": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "70": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "71": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "72": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "73": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "74": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "75": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 3
+    },
+    "76": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "77": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "78": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "79": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "80": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "81": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "82": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "83": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "84": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "85": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "86": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "87": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "88": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "89": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "90": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "91": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "92": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "93": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "94": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "95": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "96": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "97": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "98": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "99": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "100": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "101": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "102": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "103": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "104": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "105": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "106": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "107": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "108": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "109": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "110": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "111": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "112": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "113": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "114": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "115": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "116": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "117": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "118": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "119": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "120": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "121": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "122": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "123": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "124": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 2
+    },
+    "125": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "126": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "127": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "128": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "129": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "130": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "131": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "132": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "133": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "134": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "135": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "136": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "137": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "138": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "139": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "140": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "141": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "142": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "143": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "144": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "145": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "146": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "147": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "148": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "149": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "150": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "151": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "152": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "153": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "154": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "155": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "156": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "157": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "158": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "159": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "160": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "161": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "162": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "163": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "164": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "165": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "166": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "167": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "168": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "169": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "170": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "171": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "172": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "173": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "174": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "175": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "176": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "177": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "178": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "179": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "180": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "181": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "182": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "183": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "184": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "185": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "186": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "187": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "188": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "189": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "190": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "191": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "192": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "193": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "194": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "195": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "196": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "197": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "198": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "199": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "200": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "201": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "202": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "203": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    },
+    "204": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 1
+    },
+    "205": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 3
+    },
+    "206": {
+      "uid": 2000,
+      "resolution": "resolved_after_first_packet",
+      "lookup_attempts": 1,
+      "resolve_latency_ms": 0
+    }
+  },
+  "stats": {
+    "packets_recorded": 584581,
+    "packets_observed_uplink": 281160,
+    "packets_observed_downlink": 303421,
+    "bytes_observed_uplink": 213147854,
+    "bytes_observed_downlink": 254927340,
+    "capture_queue_drops": 0,
+    "captured_bytes": 104035714,
+    "file_bytes": 139103892,
+    "storage_errors": 0,
+    "forwarding_errors": 0,
+    "uid_lookup_misses": 2,
+    "uid_requests_queued": 206,
+    "uid_request_queue_overflows": 0,
+    "capture_ring_peak_bytes": 4718592,
+    "uid_resolve_latency_ms_p50": 1,
+    "uid_resolve_latency_ms_p95": 2,
+    "uid_flows_resolved": 204,
+    "uid_lookup_calls": 214,
+    "uid_resolve_latency_ms_max": 5,
+    "uid_requests_received": 206,
+    "stop_finalize_ms": 334
+  },
+  "native_counters": {
+    "anchor_boottime_ns": 232034167267471,
+    "anchor_realtime_ns": 1792707236331062906,
+    "bytes_dl": 254927340,
+    "bytes_ul": 213147854,
+    "capture_queue_drops_dl": 0,
+    "capture_queue_drops_ul": 0,
+    "capture_ring_peak_slots": 16384,
+    "capture_ring_slot_bytes": 288,
+    "capture_ring_slots": 16384,
+    "captured_bytes": 104035714,
+    "engine_running": 0,
+    "file_bytes": 139103892,
+    "flow_table_full": 0,
+    "flows_created": 206,
+    "flows_expired": 2,
+    "forward_alloc_failures": 0,
+    "forwarding_errors": 0,
+    "nonflow_packets": 9,
+    "pkts_dl": 303421,
+    "pkts_ul": 281160,
+    "records_discarded_null": 0,
+    "records_written": 584581,
+    "storage_dropped_records": 0,
+    "storage_errors": 0,
+    "tcp_connect_failures": 0,
+    "tcp_conns_active": 0,
+    "tcp_conns_total": 203,
+    "tun_read_batches": 75510,
+    "tun_read_errors": 0,
+    "tun_read_packets": 281160,
+    "tun_write_errors": 0,
+    "udp_send_errors": 0,
+    "udp_sessions_active": 0,
+    "udp_sessions_total": 3,
+    "uid_request_queue_overflows": 0,
+    "uid_requests_queued": 206,
+    "uid_resolution_drops": 0,
+    "uid_resolutions_applied": 206,
+    "unparsable_packets": 0,
+    "write_syscalls": 172,
+    "writer_stall_ms": 0
+  },
+  "capture_engine": "native_ndk",
+  "benchmark_profile": "full_metadata",
+  "app_version": "0.1.0",
+  "device_api_level": 37,
+  "writer_version": "mpc-native-pcapng-1",
+  "forwarder_name": "lwip-heiher-e6d5fc6+socket-relay",
+  "stop_reason": "user_stop",
+  "known_limitations": [
+    "Capture point is the Android VPN TUN interface, not the physical radio interface.",
+    "TCP is terminated by an on-device user-space stack (lwIP); downlink TCP segments, ACK timing and SYN-ACK are synthesized locally and do not mirror server packet boundaries.",
+    "UDP is relayed per datagram; downlink datagrams are re-encapsulated by the relay (IP ID\/TTL differ from the network).",
+    "ICMP is not forwarded by the VPN in v1.",
+    "Uplink timestamps are taken at TUN read; downlink timestamps just before TUN write. Microsecond resolution is not microsecond accuracy.",
+    "UID attribution uses ConnectivityManager.getConnectionOwnerUid asynchronously; early packets of a flow carry only the flow ID and are joined through flow_uid_map.",
+    "Packets that are not TCP\/UDP with readable ports carry no flow ID comment (flow_id 0).",
+    "Capture-queue drops are logging-record drops, never forwarding drops."
+  ]
+}

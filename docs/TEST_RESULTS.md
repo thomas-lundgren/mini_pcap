@@ -67,15 +67,85 @@ out-of-order parts → 400; path-traversal filename and non-UUID ID → 400; mis
 | V21 | upload during recording | PASS | schedule refused ("Stop logging before uploading"), no job pending |
 | V22 | TLS failure / bad token | PASS | untrusted server cert → "TLS certificate not trusted…" (no HTTP request sent); bad token → preflight `401` → "Not authorized (401): check the API token" |
 | V23 | duplicate retry | PASS | second upload → HTTP 200, same receipt `srv-000001`, one dataset on server |
+| V07 | Include / Exclude | PASS (shell UID as test app) | `device_lifecycle.py`: Include(com.android.shell) → +2001 tun0 pkts for a 2000-pkt workload; Exclude → +32 tun0 pkts (other apps), bypassed shell kept UDP 0 % loss and 183.5 Mbit/s TCP |
+| V09 | Stop under TCP download + duplicate Stop | PASS | one finalization, COMPLETE, 70,410 records, 0 drops, finalize 179 ms, PCAPNG + sidecar valid |
+| V17 | 5 rapid Start/Stop cycles | PASS | 5 sessions, all COMPLETE, VPN down at end |
 | V27 | token not in logs | PASS (app) | token string absent from app logs; one occurrence was adbd logging the *test harness* command line (documented debug-hook caveat) |
 
 ## 5. Performance (P0 / P1)
 
-See section filled from `validation/perf/results/Pixel_9_Pro/2026-10-22/` below.
+**Run:** `python3 -I validation/perf/bench.py --host 192.168.1.131 --repeats 3 --variants A,B,C,D,E,F --stall`
+(commit after `Fix UDP relay drops…`, 2026-10-22 22:0x–22:30 UTC). Raw per-run JSON, sidecars and
+`SUMMARY.md`: `validation/perf/results/Pixel_9_Pro/2026-10-23/`. Pixel 9 Pro / Android 17 / Tensor G4,
+USB-powered, battery ~44 %, thermal status 0 throughout; Wi-Fi 5 GHz LAN to host nettool server;
+Include mode with `com.android.shell` only; snaplen 256; MTU 1500. 3 repeats, variant order rotated.
+Deviations from PERFORMANCE_PLAN: 3 s warm-up instead of 60 s; 15 s/10 s workloads; personal phone
+with background apps (system-wide CPU is noisy); no external power meter.
+
+**Superseded:** the first run (`…/2026-10-22_run1_invalid-cpu-accounting/`, see its `NOTE.md`) had a
+CPU-accounting script bug and exposed a real forwarding defect (relay UDP `sendto` EAGAIN → 6–10 % loss at
+5k pps in all VPN variants). Fixed by 1 MiB relay UDP socket buffers; verified `udp_send_errors = 0`.
+
+### Cost 1 + 2: baseline (A) and VPN forwarding penalty (B vs A), medians of 3
+
+| workload | A result | B result | B app CPU (engine thread) | notes |
+|---|---|---|---|---|
+| UDP 5000 pps × 100 B, 15 s | loss 0.020 %, RTT p50 7.18 / p99 16.7 ms | loss 0.019 %, p50 7.48 / p99 16.3 ms | 5.03 s (4.39 s) ≈ 29 µs/pkt | +0.3 ms RTT p50 |
+| UDP 2000 pps × 1200 B | loss 0 %, p50 6.19 / p99 16.3 ms | loss 0 %, p50 6.19 / p99 15.9 ms | 4.58 s (3.98 s) ≈ 66 µs/pkt | per-wakeup cost dominates at low rates |
+| TCP up 10 s | 110.8 Mbit/s, 105k pkts (wlan0) | 115.4 Mbit/s, 152k pkts (tun0) | 1.68 s ≈ 8 µs/pkt | TUN sees +45 % packets (stack re-segmentation/ACKs) |
+| TCP down 10 s | 179.5 Mbit/s | 177.1 Mbit/s | 3.11 s ≈ 12 µs/pkt | |
+| 200 short TCP conns | conn+RR p50 10.1 ms | p50 8.2 ms | 0.42 s | local SYN-ACK by lwIP shortens handshake as seen by app |
+
+System-wide busy CPU B−A: +1.2 … +8.0 s per workload (noisy: spread across repeats is of the same order).
+Throughput is Wi-Fi-limited in both A and B.
+
+### Cost 3: incremental capture cost (C/D/E/F vs B), medians of 3
+
+| workload | B → F app CPU | F−B | engine thread B → F | writer thread (F) | UID worker (F) | throughput/RTT F vs B |
+|---|---|---|---|---|---|---|
+| UDP 5k pps small | 5.03 → 5.19 s | +0.16 s (+3 %) | 4.39 → 4.40 s | 0.10 s ≈ 0.7 µs/record | 0.02 s | loss 0.023 % (one run 3.4 %, see below); p99 15.5 ms |
+| UDP 2k pps large | 4.58 → 4.82 s | +0.24 s (+5 %) | 3.98 → 4.11 s | 0.07 s ≈ 1.2 µs/record | 0.01 s | unchanged |
+| TCP up | 1.68 → 1.76 s | +0.08 s (+5 %) | 1.26 → 1.30 s | 0.12 s | 0.01 s | 120.5 vs 115.4 Mbit/s |
+| TCP down | 3.11 → 3.27 s | +0.16 s (+5 %) | 2.78 → 2.76 s | 0.16 s | 0.01 s | 165.0 [158–183] vs 177.1 [148–179] Mbit/s |
+| 200 short TCP conns | 0.42 → 0.49 s | +0.07 s | 0.31 → 0.24 s | 0.01 s | 0.15 s (≈0.75 ms/flow) | unchanged |
+
+Stage view (engine thread, µs/pkt, UDP 5k): B 29.3, C 29.5, D 31.3, E 28.6, F 29.4 — differences are within
+the min–max spread of repeats; the measurable logging work is the writer thread (0.5–1.2 µs/record), the UID
+worker (~1 lookup per flow) and the 1 Hz status thread (~5 ms/s). Every capture run: **0 capture-queue drops,
+0 relay/TUN errors**; ring peak reached its 16,384-slot capacity only during the stall tests.
+
+UDP-5k outlier: F run 3 lost 3.4 % with p99 137 ms while the forwarder recorded 0 `udp_send_errors`,
+0 `tun_write_errors`, 0 capture drops and ~2,560 fewer packets on tun0 — consistent with a burst on the
+Wi-Fi path (1 of 15 VPN UDP-5k runs; none of 3 A runs). **Unexplained**, not attributed to logging.
+
+### P1 writer stall under 5k pps UDP (V32, variant D)
+
+| stall | app loss | RTT p99 | packets observed | records written | capture drops |
+|---|---|---|---|---|---|
+| 1 s | 0.063 % | 16.1 ms | 119,976 | 119,976 | 0 (ring absorbed it) |
+| 5 s | 0.043 % | 16.3 ms | 119,986 | 86,267 | 33,719 (= observed − written) |
+
+Forwarding is unaffected by a stalled writer; drops are counted exactly and only in capture counters.
+
+### P1 hot-path audit (V31)
+- Source + arm64 disassembly: `mpc_capture_begin` calls only parser/flow-table functions; no JNI, allocator,
+  logging, formatting or file I/O on the forwarding thread. Writer `write()` calls: ~175 per 600k records (≈1 MiB batches).
+- Host test: 200,000 tap calls (incl. new flows) → heap in-use delta 0 B, mmap delta 0 B.
+- JNI crossings during capture: ~1 Hz counter snapshot + batched UID poll/deliver (≤256 flows/batch); none per packet.
+- Not done: Perfetto trace / simpleperf profile of the engine thread.
+
+### Gate verdicts (agent assessment; **coordinator/independent review not yet performed**)
+- **P0:** forwarding works for TCP/UDP/DNS/QUIC/IPv4/IPv6 on the target phone; VPN penalty quantified above.
+  Not covered: Wi-Fi↔cellular handover, cellular network, second device.
+- **P1:** PASS on the measured criteria (no per-packet JNI/alloc on the tap, stall isolation, bounded memory,
+  B/C/D/E data on one workload set). Incremental logging cost ≈ +3–5 % process CPU vs B at 2k–5k pps and
+  ~110–180 Mbit/s TCP, throughput/RTT changes within run-to-run spread. Provisional P2 budgets still need sign-off.
+- No "minimal overhead" claim is made: independent review and P2 (energy, thermal, cellular, snaplen sweep) are open.
 
 ## Not tested yet
 
-V07 Include/Exclude with two distinct apps (only `com.android.shell` Include verified via benchmarks), V10 notification
-permission denied, V12 VPN revoked by another VPN, V14 Wi-Fi↔cellular handover, V13 low disk on device, V15 shared-UID
-classification on device, V17 rapid start/stop stress, V18/V34 1-hour soak, V24 reboot during upload, V25 metered
-cellular policy, V33 snaplen sweep, P2 energy/thermal, second Android API level.
+Notification-action *tap* (blocked by another app's biometric overlay), V10 notification permission denied,
+V12 VPN revoked by another VPN, V14 Wi-Fi↔cellular handover and cellular networks, V13 low disk on device
+(host `/dev/full` test only), V15 shared-UID classification on device, V24 reboot during upload, V25 metered
+cellular policy, V33 snaplen sweep, P2 energy/thermal, second Android API level, Perfetto/simpleperf traces,
+independent review.

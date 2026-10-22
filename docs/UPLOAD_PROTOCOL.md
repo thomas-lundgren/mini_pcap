@@ -1,6 +1,6 @@
 # Upload Protocol — Version 1 (proposed client/receiver contract)
 
-**State:** PROPOSED, not implemented or validated  
+**State:** v1 implemented (Android client + reference receiver) and tested — see `docs/TEST_RESULTS.md`  
 **Target:** Configurable HTTPS server for user-triggered upload of complete Android PCAPNG captures.  
 **MVP policy:** Upload only after logging has stopped and both artifacts are finalized. No automatic upload.
 

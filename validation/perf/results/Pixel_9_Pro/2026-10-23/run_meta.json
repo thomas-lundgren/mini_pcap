@@ -1,0 +1,62 @@
+{
+ "device": "Pixel_9_Pro",
+ "android": "17",
+ "sdk": "37",
+ "build": "google/caiman/caiman:17/CP3A.260905.009/16091614:user/release-keys",
+ "soc": "Tensor G4",
+ "commit": "6aa7509f6be12b0c57b03d51a61f9bad86725d03",
+ "host": "192.168.1.131",
+ "workloads": [
+  {
+   "name": "udp_small_5kpps",
+   "kind": "udp",
+   "pps": 5000,
+   "size": 100,
+   "seconds": 15
+  },
+  {
+   "name": "udp_large_2kpps",
+   "kind": "udp",
+   "pps": 2000,
+   "size": 1200,
+   "seconds": 15
+  },
+  {
+   "name": "tcp_up",
+   "kind": "tcpup",
+   "seconds": 10
+  },
+  {
+   "name": "tcp_down",
+   "kind": "tcpdown",
+   "seconds": 10
+  },
+  {
+   "name": "tcp_churn_200",
+   "kind": "churn",
+   "count": 200
+  }
+ ],
+ "repeats": 3,
+ "env": {
+  "battery_level": "46",
+  "battery_temp_dC": "310",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "31.307795",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ },
+ "note": "Include mode with com.android.shell only; snaplen 256; MTU 1500; Wi-Fi LAN path phone->host."
+}

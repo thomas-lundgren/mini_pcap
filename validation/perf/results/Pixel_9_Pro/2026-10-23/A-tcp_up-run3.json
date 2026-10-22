@@ -1,0 +1,71 @@
+{
+ "variant": "A",
+ "workload": {
+  "name": "tcp_up",
+  "kind": "tcpup",
+  "seconds": 10
+ },
+ "run": 3,
+ "utc": "2026-10-22T22:28:15.166801+00:00",
+ "wall_s": 10.183,
+ "nettool": {
+  "test": "tcpup",
+  "seconds": 10.093,
+  "bytes": 139460608,
+  "mbit_s": 110.54,
+  "client_cpu_ms": 331.3
+ },
+ "iface": "wlan0",
+ "iface_delta": {
+  "rx_bytes": 393790,
+  "rx_packets": 7167,
+  "tx_bytes": 147667572,
+  "tx_packets": 97676
+ },
+ "iface_packets": 104843,
+ "app_cpu_ms": 0.0,
+ "app_threads_cpu_ms": {},
+ "app_cpu_ms_per_million_tun_packets": null,
+ "system_busy_ms": 13070.0,
+ "system_busy_ms_per_million_packets": 124662.6,
+ "env_before": {
+  "battery_level": "44",
+  "battery_temp_dC": "353",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "35.82139",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ },
+ "env_after": {
+  "battery_level": "44",
+  "battery_temp_dC": "347",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "35.629147",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ }
+}

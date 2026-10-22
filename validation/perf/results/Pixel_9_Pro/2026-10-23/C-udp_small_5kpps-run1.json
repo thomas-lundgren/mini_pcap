@@ -1,0 +1,94 @@
+{
+ "variant": "C",
+ "workload": {
+  "name": "udp_small_5kpps",
+  "kind": "udp",
+  "pps": 5000,
+  "size": 100,
+  "seconds": 15
+ },
+ "run": 1,
+ "utc": "2026-10-22T22:10:28.128809+00:00",
+ "wall_s": 16.072,
+ "nettool": {
+  "test": "udp",
+  "target_pps": 5000,
+  "size": 100,
+  "seconds": 15.0,
+  "sent": 75000,
+  "send_errors": 0,
+  "received": 74974,
+  "loss_pct": 0.0347,
+  "achieved_pps": 5000.0,
+  "rtt_us_p50": 7514,
+  "rtt_us_p95": 12313,
+  "rtt_us_p99": 15748,
+  "rtt_us_max": 24907,
+  "client_cpu_ms": 5534.9
+ },
+ "iface": "tun0",
+ "iface_delta": {
+  "rx_bytes": 9596712,
+  "rx_packets": 74975,
+  "tx_bytes": 9600088,
+  "tx_packets": 75002
+ },
+ "iface_packets": 149977,
+ "app_cpu_ms": 5080.0,
+ "app_threads_cpu_ms": {
+  "dev.minipcap": 430.0,
+  "Jit thread pool": 40.0,
+  "HeapTaskDaemon": 20.0,
+  "binder:28264_2": 20.0,
+  "RenderThread": 80.0,
+  "mali-event-hand": 10.0,
+  "android.bg": 30.0,
+  "capture-status": 10.0,
+  "mpc-writer": 20.0,
+  "mpc-engine": 4430.0,
+  "binder:28264_4": 10.0
+ },
+ "app_cpu_ms_per_million_tun_packets": 33871.9,
+ "system_busy_ms": 37090.0,
+ "system_busy_ms_per_million_packets": 247304.6,
+ "env_before": {
+  "battery_level": "46",
+  "battery_temp_dC": "309",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "31.134146",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ },
+ "env_after": {
+  "battery_level": "46",
+  "battery_temp_dC": "309",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "31.142113",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ }
+}
