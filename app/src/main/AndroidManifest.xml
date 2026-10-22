@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -49,9 +50,12 @@
             android:exported="false"
             android:label="@string/settings" />
 
+        <!-- Lint's static rule wants an exact-alarm permission for systemExempted; the platform
+             also qualifies an active, user-consented VPN app (verified on Android 17: types=0x400). -->
         <service
             android:name=".service.CaptureVpnService"
             android:exported="false"
+            tools:ignore="ForegroundServicePermission"
             android:foregroundServiceType="systemExempted|specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
