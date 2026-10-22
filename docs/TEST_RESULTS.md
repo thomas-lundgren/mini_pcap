@@ -134,6 +134,17 @@ Forwarding is unaffected by a stalled writer; drops are counted exactly and only
 - JNI crossings during capture: ~1 Hz counter snapshot + batched UID poll/deliver (≤256 flows/batch); none per packet.
 - Not done: Perfetto trace / simpleperf profile of the engine thread.
 
+### V18/V34 endurance soak (60 min, variant F)
+`python3 -I validation/perf/soak.py --host 192.168.1.131 --minutes 60` (raw: `validation/perf/results/soak/<date>/`
+`samples.jsonl`, `sidecar.json`, `summary.json`). Each minute: UDP 2000 pps × 200 B for 40 s, 10 s TCP download,
+50 short TCP connections. Result: **23,579,096 records, 0 capture-queue drops, 0 storage errors, 0 relay send
+errors**, 6.22 GB PCAPNG read completely by `capinfos` (3657.8 s, Raw IP, snaplen 256); RSS 194→198 (max)→165 MB,
+native heap PSS 12.8–18.0 MB, threads 33–34 (no growth); flows 3,128 created / 3,071 expired, 3,108 with UID;
+UDP loss median 0.021 %, max 0.091 %; TCP ≥ 132 Mbit/s; 0 failed short connections; thermal status 0; app CPU
+1,025 s over 3,658 s; Stop/finalize 2.56 s for the 6.2 GB file. FD count not measured (shell cannot list the
+app's `/proc/<pid>/fd`). Note: `capture_ring_peak_slots` is an upper bound (computed with the producer's
+cached tail) — it reached capacity without any drop.
+
 ### Gate verdicts (agent assessment; **coordinator/independent review not yet performed**)
 - **P0:** forwarding works for TCP/UDP/DNS/QUIC/IPv4/IPv6 on the target phone; VPN penalty quantified above.
   Not covered: Wi-Fi↔cellular handover, cellular network, second device.

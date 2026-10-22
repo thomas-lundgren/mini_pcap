@@ -1,0 +1,35 @@
+{
+ "minutes": 60,
+ "records": 23579096,
+ "capture_queue_drops": 0,
+ "file_bytes": 6221522900,
+ "storage_errors": 0,
+ "stop_finalize_ms": 2555,
+ "rss_kb_first": 194252,
+ "rss_kb_max": 197640,
+ "rss_kb_last": 164956,
+ "native_heap_kb_first": 12821,
+ "native_heap_kb_max": 17969,
+ "native_heap_kb_last": 15609,
+ "threads": [
+  33,
+  34
+ ],
+ "udp_loss_pct_max": 0.0913,
+ "udp_loss_pct_median": 0.0213,
+ "tcp_mbit_min": 132.27,
+ "churn_failed_total": 0,
+ "app_cpu_s_total": 1024.58,
+ "thermal_status": [
+  "0"
+ ],
+ "battery": [
+  "44",
+  "46"
+ ],
+ "flows_created": 3128,
+ "flows_expired": 3071,
+ "uid_flows_resolved": 3108,
+ "udp_send_errors": 0,
+ "ring_peak_slots": 16384
+}
