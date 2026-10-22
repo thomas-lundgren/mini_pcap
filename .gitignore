@@ -1,0 +1,12 @@
+build/
+.gradle/
+*.iml
+.idea/
+local.properties
+.cxx/
+/native/build*/
+/validation/perf/results/**/*.pcapng
+__pycache__/
+*.pyc
+/validation/upload-server/data/
+/validation/upload-server/certs/*.key
