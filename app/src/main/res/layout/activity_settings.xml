@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+        <TextView style="@style/SectionTitle" android:text="@string/upload_server" />
+        <EditText
+            android:id="@+id/url"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/url_hint"
+            android:inputType="textUri"
+            android:importantForAutofill="no" />
+        <EditText
+            android:id="@+id/token"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textPassword"
+            android:importantForAutofill="no" />
+        <CheckBox
+            android:id="@+id/wifiOnly"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/wifi_only" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/save" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/save" />
+            <Button android:id="@+id/test" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/test_connection" />
+            <Button android:id="@+id/clearToken" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/clear_token" />
+        </LinearLayout>
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+        <TextView style="@style/SectionTitle" android:text="@string/class_rules" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/class_rules_help"
+            android:textSize="12sp" />
+        <EditText
+            android:id="@+id/classRules"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:gravity="top"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:minLines="4"
+            android:importantForAutofill="no" />
+    </LinearLayout>
+</ScrollView>

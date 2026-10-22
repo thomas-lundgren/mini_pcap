@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: additionally trust the local TEST CA of the reference
+     receiver (validation/upload-server/make_certs.sh). Still HTTPS-only. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/test_ca" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

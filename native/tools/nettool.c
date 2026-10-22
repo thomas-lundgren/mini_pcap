@@ -282,7 +282,7 @@ static int tcp_bulk(const char *host, const char *port, int up, double secs)
     uint64_t el = now_ns() - start;
     close(fd);
     printf("{\"test\":\"%s\",\"seconds\":%.3f,\"bytes\":%llu,\"mbit_s\":%.2f,\"client_cpu_ms\":%.1f}\n",
-           up ? "tcpup" : "tcpdown", el / 1e9, (unsigned long long)bytes, bytes * 8.0 / (el / 1e3) / 1e3,
+           up ? "tcpup" : "tcpdown", el / 1e9, (unsigned long long)bytes, bytes * 8.0 / (el / 1e9) / 1e6,
            cpu_ms() - c0);
     return 0;
 }

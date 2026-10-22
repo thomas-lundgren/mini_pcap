@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/tvState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvCounters"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:fontFamily="monospace"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnStartStop"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+
+        <TextView style="@style/SectionTitle" android:text="@string/capture_settings" />
+
+        <RadioGroup
+            android:id="@+id/rgFilter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <RadioButton android:id="@+id/rbAll" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/filter_all" />
+            <RadioButton android:id="@+id/rbInclude" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/filter_include" />
+            <RadioButton android:id="@+id/rbExclude" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/filter_exclude" />
+        </RadioGroup>
+
+        <Button
+            android:id="@+id/btnPickApps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/snaplen" />
+            <Spinner android:id="@+id/spSnaplen" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/rowVariant"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/variant" />
+            <Spinner android:id="@+id/spVariant" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <TextView style="@style/SectionTitle" android:text="@string/upload" />
+
+        <TextView
+            android:id="@+id/tvLatest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/tvUploadStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/btnUpload" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/upload_latest" />
+            <Button android:id="@+id/btnCancelUpload" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/cancel_upload" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnSettings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings" />
+
+        <TextView style="@style/SectionTitle" android:text="@string/saved_captures" />
+
+        <LinearLayout
+            android:id="@+id/listSessions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/privacy_notice"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>
