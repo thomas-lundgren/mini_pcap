@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "mpc/capture.h"
 
 #include <errno.h>
@@ -303,6 +304,7 @@ static void serialize_record(mpc_capture *c, const mpc_rec_hdr *h)
 static void *writer_main(void *arg)
 {
     mpc_capture *c = arg;
+    pthread_setname_np(pthread_self(), "mpc-writer");
     uint64_t last_flush = mpc_now_boottime_ns();
     struct pollfd pfd = {.fd = c->writer_efd, .events = POLLIN};
     for (;;) {

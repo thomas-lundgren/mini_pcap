@@ -1,0 +1,82 @@
+{
+ "variant": "A",
+ "workload": {
+  "name": "udp_large_2kpps",
+  "kind": "udp",
+  "pps": 2000,
+  "size": 1200,
+  "seconds": 15
+ },
+ "run": 2,
+ "utc": "2026-10-22T21:52:36.136691+00:00",
+ "wall_s": 16.067,
+ "nettool": {
+  "test": "udp",
+  "target_pps": 2000,
+  "size": 1200,
+  "seconds": 15.0,
+  "sent": 30000,
+  "send_errors": 0,
+  "received": 30000,
+  "loss_pct": 0.0,
+  "achieved_pps": 2000.0,
+  "rtt_us_p50": 5132,
+  "rtt_us_p95": 9243,
+  "rtt_us_p99": 13031,
+  "rtt_us_max": 27942,
+  "client_cpu_ms": 2831.5
+ },
+ "iface": "wlan0",
+ "iface_delta": {
+  "rx_bytes": 36844880,
+  "rx_packets": 30059,
+  "tx_bytes": 37250988,
+  "tx_packets": 30020
+ },
+ "iface_packets": 60079,
+ "app_cpu_ms": 0.0,
+ "app_threads_cpu_ms": {},
+ "app_cpu_ms_per_million_tun_packets": null,
+ "system_busy_ms": 17450.0,
+ "system_busy_ms_per_million_packets": 290450.9,
+ "env_before": {
+  "battery_level": "45",
+  "battery_temp_dC": "305",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "30.704868",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ },
+ "env_after": {
+  "battery_level": "45",
+  "battery_temp_dC": "305",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "31.16109",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ }
+}

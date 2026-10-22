@@ -1,0 +1,81 @@
+{
+ "variant": "F",
+ "workload": {
+  "name": "tcp_down",
+  "kind": "tcpdown",
+  "seconds": 10
+ },
+ "run": 2,
+ "utc": "2026-10-22T21:51:50.875026+00:00",
+ "wall_s": 10.157,
+ "nettool": {
+  "test": "tcpdown",
+  "seconds": 10.107,
+  "bytes": 221511680,
+  "mbit_s": 175.34,
+  "client_cpu_ms": 2313.0
+ },
+ "iface": "tun0",
+ "iface_delta": {
+  "rx_bytes": 227625088,
+  "rx_packets": 152835,
+  "tx_bytes": 3127825,
+  "tx_packets": 78195
+ },
+ "iface_packets": 231030,
+ "app_cpu_ms": 400.0,
+ "app_threads_cpu_ms": {
+  "Jit thread pool": 30.0,
+  "HeapTaskDaemon": 30.0,
+  "ReferenceQueueD": 10.0,
+  "binder:14499_1": 10.0,
+  "RenderThread": 40.0,
+  "android.bg": 20.0,
+  "capture-status": 60.0,
+  "capture-control": 3150.0,
+  "uid-resolver": 20.0
+ },
+ "app_cpu_ms_per_million_tun_packets": 1731.4,
+ "system_busy_ms": 19320.0,
+ "system_busy_ms_per_million_packets": 83625.5,
+ "env_before": {
+  "battery_level": "45",
+  "battery_temp_dC": "305",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "30.972597",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ },
+ "env_after": {
+  "battery_level": "45",
+  "battery_temp_dC": "305",
+  "usb_powered": "true",
+  "thermal_status": "0",
+  "skin_temps": [
+   [
+    "37.08427",
+    "VIRTUAL"
+   ],
+   [
+    "30.992329",
+    "VIRTUAL"
+   ],
+   [
+    "0",
+    "thermal"
+   ]
+  ]
+ }
+}

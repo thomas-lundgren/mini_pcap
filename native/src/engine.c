@@ -617,6 +617,12 @@ static int sess_fd(mpc_session *s, udp_sess *u, int v6)
     int fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0)
         return -1;
+    /* Wi-Fi/driver bursts briefly fill the default (~320 KB) send buffer; the relay
+     * must not block, so a larger buffer avoids dropping app datagrams (measured:
+     * 4169 udp_send_errors at 5k pps with defaults). */
+    int sz = 1 << 20;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof(sz));
     ev_tag *tag = v6 ? &u->tag6 : &u->tag4;
     tag->type = EV_UDP;
     tag->ptr = u;
@@ -855,6 +861,7 @@ static void *engine_main(void *arg)
 {
     mpc_session *s = arg;
     t_sess = s;
+    pthread_setname_np(pthread_self(), "mpc-engine");
     struct epoll_event evs[MAX_EVENTS];
     MPC_CSET(&s->cap->cnt, engine_running, 1);
     while (!atomic_load_explicit(&s->stopping, memory_order_acquire)) {

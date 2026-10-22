@@ -235,6 +235,50 @@ static void storage_error(void)
     mpc_capture_destroy(c);
 }
 
+/* V31: the forwarding-thread tap must not allocate. glibc mallinfo2() totals stay
+ * unchanged across 200k begin/commit calls (flows created inside the bounded table). */
+#include <malloc.h>
+static void no_alloc_on_tap(void)
+{
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+    mpc_capture_config cfg = {.snaplen = 256, .mtu = 1500, .variant = MPC_VARIANT_C_COPY_NULL,
+                              .ring_bytes = 4 << 20};
+    int err;
+    mpc_capture *c = mpc_capture_create(&cfg, &err);
+    CHECK(c != NULL);
+    if (!c)
+        return;
+    uint8_t pkt[2048];
+    size_t n = build_udp(pkt, 4, APP4, 1, SRV4, 53, "q", 1);
+    struct mallinfo2 m0 = mallinfo2();
+    uint64_t ok = 0;
+    for (int i = 0; i < 200000; i++) {
+        pkt[20] = (uint8_t)(i >> 8); /* vary source port: new flows too */
+        pkt[21] = (uint8_t)i;
+        uint32_t cl;
+        uint8_t *slot = mpc_capture_begin(c, i & 1 ? MPC_DIR_DOWNLINK : MPC_DIR_UPLINK,
+                                          mpc_now_boottime_ns(), pkt, n, (uint32_t)n, &cl);
+        if (slot) {
+            memcpy(slot, pkt, cl);
+            mpc_capture_commit(c);
+            ok++;
+        }
+        if ((i & 1023) == 0) { /* emulate the consumer so the ring keeps accepting */
+            uint64_t t;
+            uint64_t avail = mpc_ring_available(&c->ring, &t);
+            mpc_ring_release(&c->ring, t + avail);
+        }
+    }
+    struct mallinfo2 m1 = mallinfo2();
+    CHECK_EQ(m1.uordblks, m0.uordblks);
+    CHECK_EQ(m1.hblkhd, m0.hblkhd);
+    CHECK(ok > 0);
+    printf("tap: %llu records, heap in-use delta=%lld bytes, mmap delta=%lld bytes\n",
+           (unsigned long long)ok, (long long)(m1.uordblks - m0.uordblks), (long long)(m1.hblkhd - m0.hblkhd));
+    mpc_capture_destroy(c);
+#endif
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : ".";
@@ -242,5 +286,6 @@ int main(int argc, char **argv)
     fixture(dir);
     stall(dir);
     storage_error();
+    no_alloc_on_tap();
     TEST_DONE();
 }
