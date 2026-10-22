@@ -70,6 +70,9 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
         onProgress: (sent: Long, total: Long) -> Unit,
         cancelled: () -> Boolean,
     ): UploadReceipt = withErrors {
+        // Preflight: surface auth/TLS/protocol errors before streaming a large body (a
+        // receiver rejecting early would otherwise show up as a broken pipe mid-upload).
+        testConnection()
         val boundary = "mpc-" + java.util.UUID.randomUUID().toString().replace("-", "")
         val manifest = manifest(captureId, pcapDigest, metaDigest).toString().toByteArray(Charsets.UTF_8)
         val parts = listOf(

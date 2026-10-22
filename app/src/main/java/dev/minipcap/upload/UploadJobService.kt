@@ -46,6 +46,9 @@ class UploadJobService : JobService() {
             val (sessions, uploads) = stores(ctx)
             val rec = sessions.get(captureId) ?: return "Unknown capture"
             val pair = sessions.pairFor(rec) ?: return "Capture is not complete (no finalized PCAPNG + sidecar pair)"
+            uploads.get(captureId).takeIf { it.status == UploadStatus.SUCCEEDED }?.let {
+                return "Already uploaded (receipt ${it.receiptId})"
+            }
             val settings = UploadSettings(ctx).load()
             UploadSettings.validateUrl(settings.baseUrl)?.let { return "Upload server: $it" }
             val js = ctx.getSystemService(JobScheduler::class.java)

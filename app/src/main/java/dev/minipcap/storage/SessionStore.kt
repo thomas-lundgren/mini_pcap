@@ -129,7 +129,9 @@ class SessionStore(val dir: File) {
     fun recoverInterrupted(activeId: String?, nowMs: Long): List<SessionRecord> {
         val out = ArrayList<SessionRecord>()
         for (r in list()) {
-            if (!r.state.isActive || r.id == activeId) continue
+            // Active sessions were interrupted; ERROR sessions may still hold a .partial capture.
+            val interrupted = r.state.isActive || (r.state == SessionState.ERROR && pcapPartial(r.id).exists())
+            if (!interrupted || r.id == activeId) continue
             out += recoverOne(r, nowMs)
         }
         return out
