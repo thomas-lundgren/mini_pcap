@@ -14,11 +14,11 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
 | M2 Native packet writer + metadata | DONE (format replaced by ADR-014) | `check_native.sh`: PCAP (SLL) fixtures checked by the analyzer reader and tshark; metadata format cross-checked Kotlin → Python |
 | M3 Native pipeline + P1 | DONE (P1 agent verdict PASS, review pending) | tap 0 allocs; stall 5 s → 0.04 % app loss, drops counted; logging ≈ +3–5 % process CPU vs B |
 | M4 App filter UI | DONE (basic) | All/Include/Exclude, searchable picker (launcher apps), snaplen; V07 verified with shell UID. Gap: two real third-party apps |
-| M5 Notification + Stop | DONE except tap test | systemExempted FGS, 1 Hz text, session-scoped Stop intent, idempotent stop (V09, V17), force-stop recovery (V11). Gap: physical tap on notification action, permission-denied, VPN revoke |
+| M5 Notification + Stop | DONE | systemExempted FGS, 1 Hz text, session-scoped Stop intent, idempotent stop (V09, V17), force-stop recovery (V11). physical notification tap verified on the release build (TEST_RESULTS "Release build on device"). Gap: permission-denied, VPN revoke |
 | M6 Upload | DONE | receiver + 14 tests; Kotlin↔Python cross test; device upload SHA-256 identical, replay 200, 409, 401 preflight, refused while recording |
 | USB offload (ADR-012) | DONE (1 device) | finalized pairs moved to `Download/MiniPcap` with read-back SHA-256 check; force-stop mid-move recovered; upload from moved files. Gap: UI delete, MTP, API 29–32 |
 | ADR-015 layered structure + review hardening | DONE (host) | 4 sub-agent reviews, fixes + tests; coverage matrix docs/TEST_COVERAGE.md |
-| ADR-014 PCAP (SLL) + binary `.meta` + analyzer | IMPLEMENTED, host-tested (phases 1–4) | direction in SLL, header floor (≥ IP + transport header), asynchronous collectors (GPS, motion, radio, network, apps), `mpcanalyze.py`. **Phase 5 (device + performance): NOT TESTED** |
+| ADR-014 PCAP (SLL) + binary `.meta` + analyzer | IMPLEMENTED, host-tested (phases 1–4) | direction in SLL, header floor (≥ IP + transport header), asynchronous collectors (GPS, motion, radio, network, apps), `mpcanalyze.py`. Phase 5: release build device-tested end to end (all collectors, 506k packets, 0 drops); device performance rerun NOT TESTED |
 | M7 / P2 | PARTIAL | 60-min soak PASS (23.6M records, 0 drops, bounded memory); no energy, thermal-stress, snaplen sweep, cellular, second API level, security review |
 
 ## Verified accomplishments (this session)

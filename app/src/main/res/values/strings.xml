@@ -31,7 +31,7 @@
     <string name="retry_upload">Retry upload</string>
     <string name="cancel_upload">Cancel upload</string>
     <string name="saved_captures">Saved captures</string>
-    <string name="privacy_notice">Packet prefixes can contain domain names, credentials or message content. The default 256 bytes limits file size; it is not a privacy guarantee. Finished captures are moved to Download/MiniPcap, where they can be copied over USB and read by file-manager apps with all-files access; turn this off in Settings to keep them in app-private storage. Capture happens at the VPN interface, not the radio. With GPS and radio measurements on, the .meta file also contains your precise location track and nearby cell and Wi-Fi identifiers.</string>
+    <string name="privacy_notice">Packet prefixes can contain domain names, credentials or message content. The default 128 bytes (always at least the full IP and transport headers) limits file size; it is not a privacy guarantee. Finished captures are moved to Download/MiniPcap, where they can be copied over USB and read by file-manager apps with all-files access; turn this off in Settings to keep them in app-private storage. Capture happens at the VPN interface, not the radio. With GPS and radio measurements on, the .meta file also contains your precise location track and nearby cell and Wi-Fi identifiers.</string>
     <string name="include_empty">Include mode needs at least one selected app.</string>
     <string name="vpn_denied">VPN permission was not granted.</string>
     <string name="no_complete_capture">No complete capture yet</string>

@@ -160,6 +160,34 @@ cached tail) — it reached capacity without any drop.
   ~110–180 Mbit/s TCP, throughput/RTT changes within run-to-run spread. Provisional P2 budgets still need sign-off.
 - No "minimal overhead" claim is made: independent review and P2 (energy, thermal, cellular, snaplen sweep) are open.
 
+## Release build on device (2026-10-23)
+
+Signed release APK built from `0490a83` (versionName 0.1.0, release keystore outside the repo), installed on the
+Pixel 9 Pro (`CP3A.260905.009`), started from the UI with all measurement sources on, ordinary user traffic over
+Wi-Fi 5 GHz, stopped by the **user tapping Stop logging in the notification**. The capture held the user's real
+traffic: it was analyzed locally, nothing was committed, and both copies (phone and host) were deleted afterwards.
+Location coordinates were not inspected or recorded.
+
+| Check | Result |
+|---|---|
+| Start, VPN, FGS | VPN validated; FGS types 0x408 (systemExempted + location); notification shown |
+| Stop via notification tap (V09 physical tap) | **PASS** — "Capture saved" notification, pair auto-moved to `Download/MiniPcap` |
+| `mpcanalyze.py validate` | ok — 506,387 packets; SESSION_END complete (user_stop); 0 capture drops, 0 metadata drops |
+| Direction (tshark `sll.pkttype`) | 276,428 DL (0), 229,959 UL (4) |
+| Attribution | 160 flows: 151 resolved at first lookup, 9 unresolved (invalid UID); 11 apps; 506,363/506,387 packets with an app |
+| Location (fused) | 64 fixes, median horizontal accuracy 14 m, median receive delay 119 ms; satellite count present in 43 |
+| GNSS status | reported (indoors: 0 used / 1 visible at the end) |
+| Motion (max_rate 50 Hz) | accelerometer 22,139 samples at 50.0 Hz, gyroscope 21,992 at 49.7 Hz |
+| Radio | RADIO_STATE LTE → override NR_NSA, service state in service; serving LTE band 3, 20 MHz; CELL_MEASUREMENT 7 cells (serving + 6 neighbors, RSRP/RSRQ/SNR/CQI/TA), interval median 10.0 s, max 13.6 s; SIGNAL_STRENGTH with modem timestamps |
+| Wi-Fi / network | connected, RSSI −60 dBm, 5240 MHz, 866 Mbit/s, 802.11ac; transports wifi+vpn, validated |
+| Clock sync | start, 7 periodic, stop |
+| Analyzer timeline | 506,387 rows in 7.9 s (64.5 k rows/s); app, cell, RSRP, Wi-Fi, motion columns 100 %; location: 54 rows before first fix, 94,439 stale, rest latest |
+
+Findings: the privacy notice said "default 256 bytes" (default is 128) — fixed. The capture notification channel is
+IMPORTANCE_LOW, so it sits in the silent section; unchanged (an existing channel's importance cannot be raised
+without a new channel id). UI automation (`uiautomator dump`) fails while recording ("could not get idle state").
+Not covered: cellular-only capture, handover, upload from this build, performance rerun (bench.py), force-stop recovery on this build.
+
 ## Engine split + relay review (2026-10-23)
 
 | Check | Result | Evidence |
