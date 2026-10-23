@@ -9,20 +9,16 @@ and no computer are needed while capturing.
 
 ## Quick start
 
-You need an Android 10+ phone with USB debugging enabled and a computer with the Android SDK/NDK
-(see [Building from source](#building-from-source)).
+You need an Android 10+ phone.
 
-```bash
-git clone https://github.com/thomas-lundgren/mini_pcap.git && cd mini_pcap
-./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-1. Open **MiniPcap** on the phone. Choose which apps to capture (**All**, **Include** or **Exclude**).
-2. Tap **Start logging** and accept the VPN and notification prompts.
-3. Use your apps as usual. The notification shows elapsed time, packets and file size.
-4. Tap **Stop logging** in the notification (or in the app).
-5. Copy the capture to your computer and open it:
+1. Download `minipcap-<version>.apk` from the [latest release](https://github.com/thomas-lundgren/mini_pcap/releases/latest)
+   and open it on the phone (allow installing from that source), or run `adb install minipcap-<version>.apk`.
+   To build it yourself instead, see [Building from source](#building-from-source).
+2. Open **MiniPcap** on the phone. Choose which apps to capture (**All**, **Include** or **Exclude**).
+3. Tap **Start logging** and accept the VPN and notification prompts.
+4. Use your apps as usual. The notification shows elapsed time, packets and file size.
+5. Tap **Stop logging** in the notification (or in the app).
+6. Copy the capture to your computer and open it:
 
    ```bash
    adb pull /sdcard/Download/MiniPcap/ .
@@ -269,7 +265,13 @@ press **Upload**.
 ```bash
 ./gradlew assembleDebug                      # app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease                    # signed if ~/.android/minipcap-release.properties exists
 ```
+
+Release signing reads `storeFile`, `storePassword`, `keyAlias` and `keyPassword` from
+`~/.android/minipcap-release.properties`, or from the path in `-Pminipcap.signing=<file>`. Without
+that file the release APK is unsigned. The debug and release builds use different keys, so switching
+between them requires uninstalling the app.
 
 The app targets API 35 and runs on Android 10 (API 29) and newer. The debug build also trusts the
 test CA from `make_certs.sh` and accepts automation commands from `adb` (see below). Release builds do
