@@ -94,3 +94,8 @@ adbd's log) — use it only with throwaway test tokens.
 - Only one VPN can be active; starting another VPN stops the capture (`stop_reason: vpn_revoked`).
 - Recovered (force-stopped) captures are kept locally with `status: recovered` and are not
   selected by *Upload latest*.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). The vendored lwIP fork in `third_party/lwip/` keeps its own
+BSD-3-Clause license ([`third_party/lwip/LICENSE`](third_party/lwip/LICENSE)).
