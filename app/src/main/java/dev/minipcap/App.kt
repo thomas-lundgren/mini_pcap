@@ -22,7 +22,8 @@ class App : Application() {
         val dir = CaptureFileProvider.capturesDir(this)
         val store = SessionStore(dir)
         recovered = try {
-            store.recoverInterrupted(activeId = null, nowMs = System.currentTimeMillis())
+            store.recoverInterrupted(activeId = null, nowMs = System.currentTimeMillis(),
+                nowBootNs = android.os.SystemClock.elapsedRealtimeNanos())
         } catch (e: Exception) {
             Log.e("App", "recovery failed: ${e.javaClass.simpleName}")
             emptyList()

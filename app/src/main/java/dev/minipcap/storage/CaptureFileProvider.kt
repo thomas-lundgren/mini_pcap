@@ -12,8 +12,8 @@ import java.io.File
 import java.io.FileNotFoundException
 
 /**
- * Minimal read-only provider exposing only finalized artifacts (`*.pcapng`,
- * `*.meta.json`) from the private captures directory via temporary URI grants.
+ * Minimal read-only provider exposing only finalized artifacts (`*.pcap`, `*.meta`,
+ * legacy `*.pcapng` / `*.meta.json`) from the private captures directory via temporary URI grants.
  * Not exported; never serves `.partial` files or state/upload records.
  */
 class CaptureFileProvider : ContentProvider() {
@@ -21,7 +21,7 @@ class CaptureFileProvider : ContentProvider() {
 
     private fun resolve(uri: Uri): File {
         val name = uri.lastPathSegment ?: throw FileNotFoundException()
-        if ('/' in name || name.startsWith(".") || !(name.endsWith(".pcapng") || name.endsWith(".meta.json")))
+        if ('/' in name || name.startsWith(".") || SHAREABLE.none { name.endsWith(it) })
             throw FileNotFoundException("not shareable")
         val f = File(capturesDir(context!!), name)
         if (!f.isFile) throw FileNotFoundException()
@@ -34,7 +34,11 @@ class CaptureFileProvider : ContentProvider() {
     }
 
     override fun getType(uri: Uri): String =
-        if (uri.lastPathSegment?.endsWith(".json") == true) "application/json" else "application/vnd.tcpdump.pcap"
+        when {
+            uri.lastPathSegment?.endsWith(".json") == true -> "application/json"
+            uri.lastPathSegment?.endsWith(".meta") == true -> "application/octet-stream"
+            else -> "application/vnd.tcpdump.pcap"
+        }
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor {
         val f = resolve(uri)
@@ -50,6 +54,8 @@ class CaptureFileProvider : ContentProvider() {
 
     companion object {
         const val AUTHORITY = "dev.minipcap.files"
+        /** Finalized artifacts only (current and legacy formats); never .partial or state files. */
+        private val SHAREABLE = listOf(".pcap", ".meta", ".pcapng", ".meta.json")
         fun capturesDir(ctx: Context) = File(ctx.filesDir, "captures")
         fun uriFor(f: File): Uri = Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(f.name).build()
     }

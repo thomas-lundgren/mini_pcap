@@ -1,9 +1,11 @@
 # MiniPcap — per-app packet logger for Android (no root)
 
-MiniPcap records the network traffic of selected Android apps into standard **PCAPNG** files that
-open directly in Wireshark. Every packet carries its direction and the app that sent or received it,
-and a small JSON sidecar maps those apps to package names. It runs as an on-device VPN, so no root
-and no computer are needed while capturing.
+MiniPcap records the network traffic of selected Android apps on the phone itself (an on-device VPN,
+no root). Each session produces a **PCAP** file that opens directly in Wireshark, with uplink and
+downlink marked on every packet, and a compact binary **metadata** file. That file holds position,
+motion and radio measurements (serving and neighbor cells, signal strength, radio technology) plus app
+ownership, each recorded asynchronously when it changes. A post-processing analyzer combines the two
+by timestamp.
 
 ---
 
@@ -22,7 +24,8 @@ You need an Android 10+ phone.
 
    ```bash
    adb pull /sdcard/Download/MiniPcap/ .
-   wireshark MiniPcap/<capture-id>.pcapng
+   wireshark MiniPcap/<capture-id>.pcap
+   python3 analyzer/mpcanalyze.py timeline MiniPcap/<capture-id>.pcap MiniPcap/<capture-id>.meta --csv > packets.csv
    ```
 
    Or connect the phone with USB file transfer and copy `Download/MiniPcap/` with your file manager.
@@ -51,23 +54,22 @@ That's it. The sections below explain what is in the files and what else the app
 
 - **Per-app capture without root:** an Android `VpnService` carries the traffic of the apps you pick;
   other apps bypass it untouched.
-- **Standard PCAPNG output:** raw IP packets with microsecond timestamps, truncated to a prefix you
-  choose (64–512 bytes, or full packets).
-- **Tagged packets:** each packet carries its app (UID), flow ID and a reference to the context it was
-  captured in, as `u=10234;f=17;c=842` in the standard packet comment.
-- **Position, motion and radio context:** about once a second the file records location, motion,
-  radio technology, serving and neighbor cells with their signal measurements, and the Wi-Fi link.
-  Packets point to the record in effect.
-- **Self-contained files:** app names and all context are inside the PCAPNG and decode in Wireshark
-  without plugins. The JSON sidecar is a convenient summary.
-- **Direction on every packet:** uplink (app → network) or downlink (network → app), in the standard
-  PCAPNG flags field.
+- **Wireshark-ready PCAP:** nanosecond timestamps, direction on every packet (Linux SLL packet type),
+  and at least the full IP + TCP/UDP header of every packet. You choose how much payload to keep beyond
+  that.
+- **Asynchronous measurements:** a binary `.meta` file records GPS, accelerometer/gyroscope samples,
+  radio technology, serving and neighbor cells with RSRP/RSRQ/SINR, Wi-Fi and network state. Each
+  source runs at its own rate, writes only on new data, and keeps its source timestamp.
+- **App attribution:** UID → package mappings and flow → UID mappings, so the analyzer can name the
+  app of every packet, including the first packets of a connection.
+- **Analyzer:** reconstructs the device context for any packet or point in time, exports enriched
+  CSV or PCAPNG, and marks missing or stale data explicitly.
 - **Control from the notification:** a status line updated every second and a **Stop logging** button
   that works with the app closed.
-- **Crash-safe files:** if Android kills the app mid-capture, the next launch recovers everything
-  written up to that point.
-- **Easy offload:** finished captures are moved to `Download/MiniPcap/` for USB copying, or can be
-  shared, or uploaded to your own HTTPS server.
+- **Crash-safe files:** if Android kills the app mid-capture, the next launch repairs both files up to
+  the last complete record.
+- **Easy offload:** finished pairs are moved to `Download/MiniPcap/` for USB copying, or can be shared,
+  or uploaded to your own HTTPS server.
 
 ## Using the app
 
@@ -78,7 +80,19 @@ That's it. The sections below explain what is in the files and what else the app
 | **All** | Every app's traffic goes through the capture (except MiniPcap itself). |
 | **Include** | Only the apps you select. Everything else bypasses the VPN. |
 | **Exclude** | Everything except the apps you select. |
-| **Bytes per packet** | How much of each IP packet to keep: 64, 128, **256** (default), 512 or full. The original length is always recorded. |
+| **Bytes per packet** | **Headers only**, **128** (default), 256, 512 or full packet. Every option keeps at least the complete IP + TCP/UDP header; the original length is always recorded. |
+| **GPS / Radio / Motion** | Which measurement sources write to the `.meta` file. Rates and modes are under **Settings → Measurements**. |
+
+### Measurement settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Motion logging | up to the sampling rate | *every sample*, *up to the sampling rate*, or *only on change* (threshold) |
+| Motion sampling rate | 50 Hz | requested sensor rate (independent of packet rate) |
+| Threshold | 0.5 m/s² (rad/s) | change needed in threshold mode; unchanged values are still refreshed once per second |
+| Include gyroscope | on | gyroscope samples next to the accelerometer |
+| GPS minimum interval / distance | 1000 ms / 0 m | location update thresholds |
+| Cell info refresh | 2000 ms | explicit modem refresh requests; reports in between are event driven |
 
 ### Starting and stopping
 
@@ -86,8 +100,9 @@ Start from the app. While recording, a notification shows the elapsed time, pack
 with a **Stop logging** action. Stopping flushes and closes the files, usually in under a second (2.6 s for a 6 GB capture).
 
 If the app is force-stopped or killed instead, the capture is marked **recovered** on the next launch:
-the PCAPNG file is cut back to its last complete packet and the sidecar is rebuilt from the most recent
-checkpoint (written every 10 seconds).
+both files are cut back to their last complete record and a `SESSION_END` record marked "recovered"
+is appended to the `.meta` file. At most about one second of metadata is lost, since the writer
+flushes once per second.
 
 ### Where captures are stored
 
@@ -100,216 +115,121 @@ Tap a capture in **Saved captures** to share the pair, upload it, move it, or de
 
 ## Output files
 
-Each capture is a pair with the same ID:
+Each recording session produces two files with the same session ID:
 
 ```
 Download/MiniPcap/
-├── 5b19ce96-9849-4644-9447-069c49759071.pcapng      packets
-└── 5b19ce96-9849-4644-9447-069c49759071.meta.json   apps, flows, statistics
+├── 5b19ce96-9849-4644-9447-069c49759071.pcap   packets (opens in Wireshark)
+└── 5b19ce96-9849-4644-9447-069c49759071.meta   timestamped measurements and app mappings (binary)
 ```
 
-### `<id>.pcapng`
+The design rule: **packet capture stays simple and fast.** Every packet carries what is needed to
+analyse it on its own (timestamp, direction, lengths, headers). Everything else is recorded once, as
+independent timestamped events, and combined afterwards by the analyzer.
 
-The file is self-describing: packets, their app, and the position/motion/radio context they were
-captured in are all inside it. It has two interfaces:
+### `<id>.pcap`
 
-| Interface | Link type | Contains |
+A classic PCAP file (nanosecond timestamps) with link type `LINKTYPE_LINUX_SLL` (113). Each record is
+a 16-byte Linux "cooked capture" header followed by the IP packet prefix:
+
+| SLL field | Value |
+|---|---|
+| packet type | **4 = OUTGOING → uplink** (sent by the phone), **0 = HOST → downlink** (received) |
+| ARPHRD type | `0xFFFE` (none, as Linux reports for TUN devices) |
+| address | empty (no link layer exists on a VPN interface) |
+| protocol | `0x0800` IPv4 or `0x86DD` IPv6 |
+
+- **Direction** is visible in Wireshark immediately (`sll.pkttype`), without the `.meta` file.
+- **Lengths** in the PCAP include the 16-byte SLL header. The original packet length is always kept.
+- **How much is captured:** every record contains at least the complete IP and transport header,
+  whatever size you configure. For example 40 bytes for IPv4+TCP, 48 for IPv6+UDP, and 72 for IPv6+TCP
+  with the usual 12 bytes of TCP options. Configured sizes larger than that keep more payload. Header
+  chains longer than 192 bytes (rare) are cut there.
+- **Timestamps** are taken when the packet enters the capture path. They come from the monotonic
+  boot clock and are converted to UTC with one anchor stored in the `.meta` header, so a wall-clock
+  change during recording cannot shift or reorder packets. The exact monotonic time of every packet
+  can be recovered.
+- The SLL header exists only in the file. Packets on the network are never modified.
+
+### `<id>.meta`
+
+A compact, versioned binary log of **typed, timestamped records**. Each source writes only when it has
+something new: a GPS fix, a cell report, a sensor sample, a newly resolved app. Nothing is repeated per
+packet. The full specification is [`docs/META_FORMAT.md`](docs/META_FORMAT.md).
+
+| Record | Content | When |
 |---|---|---|
-| 0 `tun0` | `LINKTYPE_RAW` (101) | the packets: raw IPv4/IPv6, no Ethernet header |
-| 1 `ctx0` | `LINKTYPE_WIRESHARK_UPPER_PDU` (252) | **context records** as JSON: position, motion, network, cellular and Wi-Fi state, plus one **app record** per app seen |
+| `SESSION_INFO` | device, Android version, app version, capture and collector settings | once |
+| `CLOCK_SYNC` | monotonic ↔ UTC pair | start, every 60 s, on time changes, stop |
+| `LOCATION` | lat/lon, altitude, speed, bearing, accuracies, provider; fix timestamp | each new fix |
+| `GNSS_STATUS` | satellites visible/used, mean C/N0 | on change, ≤ 1 Hz |
+| `MOTION_SAMPLE` | accelerometer (and gyroscope) X/Y/Z with the sensor's own timestamp | every sample, max rate, or on change |
+| `RADIO_STATE` | data network type (LTE, NR, …), 5G NSA/advanced override, data state and activity, service state, operator | on change |
+| `CELL_IDENTITY` | serving cells: RAT, MCC/MNC, cell ID, PCI, ARFCN, TAC, bands, bandwidth | serving cell change + periodic refresh |
+| `CELL_MEASUREMENT` | serving and neighbor cells: LTE RSRP/RSRQ/SINR/RSSI/CQI/TA, NR SS-RSRP/RSRQ/SINR and CSI values, WCDMA, GSM | each new modem report |
+| `SIGNAL_STRENGTH` | serving signal strength (often updated more often than cell info) | each report |
+| `NETWORK_STATE`, `WIFI_STATE` | default network transport, validated/metered, bandwidth estimates; Wi-Fi RSSI, frequency, link speeds, standard | on change + refresh |
+| `UID_MAPPING` | UID → packages, app names, class | first time an app is seen |
+| `FLOW_MAPPING` | flow 5-tuple + exact first-packet time → UID (or why unknown) | when the lookup finishes |
+| `SENSOR_STATUS`, `DROPPED_EVENTS`, `CAPTURE_STATS`, `SESSION_END` | source availability and permissions, metadata loss, capture counters, final status | as they happen |
 
-Every packet carries three things:
-
-- **Direction** in the packet flags: *outbound* (0x2) = uplink, *inbound* (0x1) = downlink.
-- **Tags** in the packet comment, `key=value` pairs joined by `;`, in the order `u`, `f`, `c`:
-
-  | Tag | Meaning |
-  |---|---|
-  | `u=10234` | app UID (look it up in the app records or the sidecar `uid_map`) |
-  | `f=17` | flow ID: same value for every packet of one TCP connection or UDP session |
-  | `c=842` | sequence number of the context record in effect when the packet was captured |
-
-  Example: `u=10234;f=17;c=842`. A tag is left out when it doesn't apply. Without `f`, the packet
-  isn't part of a TCP/UDP flow (ICMPv6, a fragment). Without `u`, Android hadn't reported the app
-  yet; see below.
-- **Timestamp** in microseconds.
-
-#### Context records
-
-About once per second, MiniPcap writes a JSON record on `ctx0` with the current state. Each section
-reports its own status and age. Values the platform doesn't provide are left out, never guessed.
-
-```jsonc
-{
-  "type": "context", "seq": 842, "time_utc": "2026-10-23T09:14:05.120Z",
-  "location": { "status": "ok", "provider": "fused", "fix_age_ms": 180,
-                "lat": 59.3326, "lon": 18.0649, "alt_m": 31.2, "h_acc_m": 3.8,
-                "speed_mps": 1.4, "bearing_deg": 212.0, "satellites_used": 17 },
-  "motion":   { "status": "ok", "window_ms": 1000, "lin_acc_mean_mps2": 0.42, "gyro_mean_rads": 0.08,
-                "azimuth_deg": 205.1, "pitch_deg": -12.4, "roll_deg": 3.0, "pressure_hpa": 1012.6 },
-  "network":  { "default_transport": "cellular", "validated": true, "metered": true },
-  "cellular": { "status": "ok", "data_rat": "LTE", "override": "NR_NSA", "operator": "24001",
-                "info_age_ms": 640,
-                "serving":   [ { "rat": "LTE", "conn": "primary", "pci": 123, "arfcn": 6300,
-                                 "tac": 4711, "ci": 26138881, "bands": [20],
-                                 "rsrp": -95, "rsrq": -11, "rssnr": 12, "cqi": 9, "ta": 3 },
-                               { "rat": "NR", "conn": "secondary", "pci": 501, "arfcn": 632256,
-                                 "ss_rsrp": -101, "ss_rsrq": -12, "ss_sinr": 8 } ],
-                "neighbors": [ { "rat": "LTE", "pci": 287, "arfcn": 6300, "rsrp": -104, "rsrq": -15 } ] },
-  "wifi":     { "status": "not_connected" }
-}
-```
-
-- **Position:** latitude/longitude, altitude, accuracy, speed, bearing and satellites from Android's
-  location service.
-- **Motion:** linear acceleration and rotation rate averaged over the interval, orientation and air
-  pressure.
-- **Radio:**
-  - radio technology: the data network type, plus the 5G NSA/advanced override
-  - serving and neighbor cells with identities and channel
-  - signal measurements per technology: LTE RSRP/RSRQ/RSSNR/CQI/TA, NR SS-RSRP/RSRQ/SINR, WCDMA
-    RSCP/Ec/No, GSM RSSI
-  - the Wi-Fi link
-- **App records** (`"type": "app"`) map a UID to its packages, app names and class. One is written
-  when each app is first seen, so the file needs no sidecar to name apps.
-
-`c=` points to the latest snapshot taken *before* the packet, not a measurement of that packet.
-Use the age fields to judge how fresh a value is. Cell measurements in particular refresh only as
-often as the modem and Android allow, often every few seconds with the screen off.
-
-Context needs the location and phone permissions, which the app asks for at **Start**. You can turn
-context off with **Record position, motion and radio** on the main screen.
-
-#### How tags are stored
-
-There are no extra metadata blocks for packets. Each packet is one standard **Enhanced Packet Block**
-(EPB), and its metadata is carried inside that block as two standard PCAPNG **options** after the
-packet bytes:
-
-| Option | Code | Content |
-|---|---|---|
-| `opt_comment` | 1 | the tags as text, e.g. `u=10234;f=17;c=842` |
-| `epb_flags` | 2 | 4-byte value; the low bits hold the direction: 2 = outbound (uplink), 1 = inbound (downlink) |
-
-Layout of one EPB for a 60-byte captured packet with comment `u=10234;f=17;c=842`. Fields are
-little-endian and padded to 4 bytes:
-
-```
-offset  size  field
-     0     4  block type = 0x00000006 (EPB)
-     4     4  block length = 128
-     8     4  interface id = 0 (tun0)
-    12     8  timestamp in µs since 1970 (high 32 bits, then low 32 bits)
-    20     4  captured length = 60
-    24     4  original length (e.g. 1400, before truncation)
-    28    60  packet bytes (IP header + start of payload)
-    88     4  option header: code 1 (comment), length 18
-    92    20  "u=10234;f=17;c=842" + 2 padding bytes
-   112     4  option header: code 2 (flags), length 4
-   116     4  0x00000002 (outbound = uplink)
-   120     4  option header: code 0 (end of options)
-   124     4  block length = 128 (repeated so readers can walk backwards)
-```
-
-The tags cost about 32 bytes per packet. A context record is also an EPB, on interface 1. Its data is
-a short Wireshark "exported PDU" header that names the `json` dissector and sets the Info-column text,
-followed by the JSON, so Wireshark decodes it without a plugin.
-
-Information about the whole file is written once at the start:
-
-- **Section Header Block:** phone model, Android version and app version.
-- **Interface Description Blocks:** for `tun0` and `ctx0`, with link type, bytes kept per packet,
-  microsecond timestamps (`if_tsresol` = 6) and name.
-
-**When `u=` is missing:** Android reports a connection's app shortly after its first packet,
-typically within 1–4 ms. The writer holds packets for up to 0.5 s before writing them, so the app can
-be filled in even for a flow's first packets. Flows that resolve later (or never, like some short
-system DNS lookups) are written without `u=`. Their UID, if found later, is in the sidecar's
-`flow_uid_map`. Holding never causes capture drops: if the queue fills past half, packets are written
-immediately.
-
-The writer is `native/src/pcapng.c` and `capture.c`. It formats tags and context records on the
-writer thread, never on the packet-forwarding path. An independent reader is
-[`validation/scripts/pcapng_tool.py`](validation/scripts/pcapng_tool.py).
-
-### `<id>.meta.json` (sidecar)
-
-A summary next to the capture. The PCAPNG doesn't need it, but it collects everything in one place:
-
-```jsonc
-{
-  "schema_version": 2,
-  "capture_id": "5b19ce96-…",
-  "status": "complete",                 // or "recovered" after a force-stop
-  "started_utc": "2026-10-23T04:06:02.472Z",
-  "snaplen_bytes": 256,
-  "comment_grammar": "u=<uid>;f=<flow_id>;c=<context_seq>, …",
-  "filter": { "mode": "include", "packages": ["org.example.app"] },
-  "uid_map": {                          // UID -> apps and class
-    "10234": { "packages": ["org.example.app"], "app_names": ["Example"], "class": "web" }
-  },
-  "flow_uid_map": {                     // flow ID -> UID, including flows resolved after their packets were written
-    "17": { "uid": 10234, "resolution": "resolved_after_first_packet", "resolve_latency_ms": 3 },
-    "18": { "uid": null,  "resolution": "unresolved_session_ended" }
-  },
-  "context": { "enabled": true, "interval_ms": 1000, "records_queued": 3600, "uid_hold_ms": 500,
-               "permissions": { "ACCESS_FINE_LOCATION": true, "READ_PHONE_STATE": true } },
-  "stats": { "packets_recorded": 250, "capture_queue_drops": 0 }
-}
-```
-
-It also records clock anchors, the forwarding engine version, the stop reason, native counters and
-known limitations. App classes come from **Settings → App classes** (`package=class` lines), with
-Android system UIDs classified automatically.
+- **Timestamps:**
+  - Every record has a monotonic timestamp in nanoseconds (`elapsedRealtimeNanos`, the same clock as
+    the packets).
+  - A record's timestamp is the measurement's own time when Android provides one (sensor event, GPS
+    fix, modem report), flagged as such. Otherwise it's the time the logger received the measurement.
+  - Records carrying a source timestamp also store the receive time, so delivery delay is visible.
+- **Missing data:** values Android doesn't provide are marked unavailable, never estimated. Missing
+  permissions, sensors or switched-off sources are recorded as `SENSOR_STATUS`.
+- **Extensibility:** new record types don't change the packet file, and readers skip unknown record
+  types by their length.
 
 ## Analysing captures
 
-**One row per packet,** with app and context columns already joined in. This uses the bundled reader,
-which needs only the Python standard library:
-
-```bash
-python3 validation/scripts/pcapng_tool.py join <id>.pcapng --csv > packets.csv
-```
-
-The columns are:
-
-- **packet:** `timestamp_us`, `src`, `dst`, `proto`, `sport`, `dport`, `direction`, `orig_len`,
-  `cap_len`, `flow_id`
-- **app:** `uid`, `uid_source`, `packages`, `app_class`
-- **context:** `ctx_seq`, `ctx_age_ms`
-- **position and motion:** `lat`, `lon`, `alt_m`, `h_acc_m`, `speed_mps`, `bearing_deg`,
-  `fix_age_ms`, `lin_acc_mean_mps2`, `gyro_mean_rads`
-- **network and cell:** `transport`, `data_rat`, `rat_override`, `serving_rat`, `serving_pci`,
-  `serving_arfcn`, `serving_dbm`, `serving_quality_db`, `serving_sinr_db`, `neighbor_cells`,
-  `cell_info_age_ms`
-- **Wi-Fi:** `wifi_rssi_dbm`, `wifi_freq_mhz`
-
-Add the sidecar as a second argument (`join <id>.pcapng <id>.meta.json`) to also fill in apps that
-were resolved after their packets were written. Other commands:
-
-```bash
-python3 validation/scripts/pcapng_tool.py contexts <id>.pcapng --csv   # one row per context record
-python3 validation/scripts/pcapng_tool.py validate <id>.pcapng         # structural check
-```
-
-**In Wireshark or `tshark`:**
+**In Wireshark:** open the `.pcap`. Direction is the SLL packet type:
 
 | To see | Display filter |
 |---|---|
-| packets only | `frame.interface_id == 0` |
-| context and app records (decoded as JSON) | `frame.interface_id == 1` |
-| one flow | `frame.comment matches "(^\|;)f=17(;\|$)"` |
-| one app (packets that carry its UID) | `frame.comment matches "^u=10234;"` |
-| everything captured under context record 842 | `frame.comment matches "c=842$"` |
+| uplink (sent by the phone) | `sll.pkttype == 4` |
+| downlink (received) | `sll.pkttype == 0` |
+
+**With the analyzer:** `analyzer/mpcanalyze.py` (Python 3.8+, standard library only) reads both files,
+puts every timestamp on the common monotonic clock, and reconstructs the device context of each packet.
+It never modifies the inputs.
 
 ```bash
-tshark -r <id>.pcapng -Y "frame.interface_id == 0" -T fields \
-       -e frame.time_epoch -e frame.packet_flags_direction -e ip.src -e ip.dst -e frame.comment
+A=analyzer/mpcanalyze.py
+python3 $A summary    <id>.pcap <id>.meta              # counts, apps, sources, drops
+python3 $A timeline   <id>.pcap <id>.meta --csv > packets.csv
+python3 $A context-at <id>.pcap <id>.meta 2026-10-23T09:14:05.120Z   # or epoch seconds, or boot:<ns>
+python3 $A dump       <id>.meta --type CELL_MEASUREMENT   # decoded records as JSON lines
+python3 $A export-pcapng <id>.pcap <id>.meta enriched.pcapng   # Wireshark copy with app/cell/position comments
+python3 $A validate   <id>.pcap <id>.meta
 ```
+
+How each kind of metadata is matched to a packet:
+
+| Kind | Examples | Method |
+|---|---|---|
+| state | serving cell, network technology, connectivity, app mapping | latest valid state before the packet |
+| sample | RSRP, RSRQ, SINR | latest measurement before the packet, with its age; flagged stale after `--stale-after` (10 s) |
+| continuous | position | linear interpolation between fixes at most `--max-location-gap` (5 s) apart, otherwise the latest fix with its age; never interpolated across gaps |
+| continuous | acceleration, rotation | mean and max magnitude over `--motion-window` (1000 ms) before the packet |
+| flows | app per packet | the packet's 5-tuple is matched to the `FLOW_MAPPING` with the same 5-tuple and the latest first-packet time not after the packet, so a reused port pair maps to the right app |
+
+The `timeline` CSV has one row per packet with these columns:
+
+- **packet:** time, direction, lengths, addresses, protocol, ports, flow ID
+- **app:** UID, packages, app class, and why the app is unknown when it is
+- **radio:** data network type, override, serving cell RAT/PCI/ARFCN/cell ID, RSRP/RSRQ/SINR with age
+  and stale flag, number of neighbor cells
+- **Wi-Fi:** RSSI
+- **position and motion:** position with status (`interpolated`, `latest`, `stale`,
+  `before_first_fix`) and fix age, acceleration and gyro statistics
 
 ## Uploading to a server
 
-MiniPcap can send the newest finished capture and its sidecar to an HTTPS server you control. Upload is
+MiniPcap can send the newest finished session (its `.pcap` and `.meta` together) to an HTTPS server you control. Upload is
 always started by you, never automatic, and is disabled while recording.
 
 1. Run a receiver. A reference implementation (Python standard library only) is included:
@@ -333,39 +253,49 @@ accept only HTTPS with system-trusted certificates.
 ## How it works
 
 ```
- selected apps ──► TUN (VpnService) ──► native engine (C, single thread) ──► sockets ──► network
-                                              │  lwIP user-space TCP/IP stack + socket relay
-                                              │
-                                              ├─ tap: copy packet prefix + flow ID into a
-                                              │       preallocated lock-free ring (never blocks)
-                                              ▼
-                                       writer thread (C) ──► <id>.pcapng   (1 MiB batches)
-                                              ▲   tags u= f= c=, holds packets ≤ 0.5 s for late UIDs
- Kotlin UID worker ── getConnectionOwnerUid() ┤  once per new flow, batched, off the packet path
- Kotlin context sampler ── location, sensors, ┘  one JSON context record per second → ctx0
-                           cells, Wi-Fi
- Kotlin service ── notification, Stop, sidecar, recovery, move to Downloads, upload
+ Packet path (native C, highest priority)
+ selected apps ──► TUN (VpnService) ──► engine thread ──► sockets ──► network
+                                          │  lwIP user-space TCP/IP stack + socket relay
+                                          ├─ tap: timestamp, direction, IP + transport header (+ payload
+                                          │       up to the configured size) into a preallocated
+                                          ▼       lock-free ring, never blocks
+                                   writer thread ──► <id>.pcap   (SLL header added here; 1 MiB writes)
+
+ Metadata path (Kotlin, independent)
+ GPS, GNSS ───────┐
+ accelerometer,   │
+ gyroscope ───────┤  collectors on their own   bounded record   binary
+ telephony ───────┼─ threads; each encodes a ──► pool / queue ──► writer ──► <id>.meta
+ network, Wi-Fi ──┤  record only on new data     (drops counted)  thread    (flush 1 s)
+ UID worker ──────┘  (flow → UID, UID → app)
+
+ Post-processing:  analyzer/mpcanalyze.py <id>.pcap <id>.meta  →  timeline, context-at, enriched PCAPNG
 ```
 
 - **Forwarding:** traffic from the TUN interface goes into a vendored [lwIP](third_party/lwip/VENDORED.md)
   stack that terminates TCP/UDP locally and relays it over ordinary sockets. MiniPcap excludes itself
   from the VPN, so its own sockets go straight to the network.
-- **Capture:** each packet is tapped where it crosses the TUN interface. The packet path never calls
-  into Java, allocates memory, formats text or touches the disk. It copies the prefix into a ring
-  buffer and moves on. If the writer falls behind, records are dropped and counted, and forwarding is
-  never slowed down.
-- **App attribution:** new flows are handed in batches to a Kotlin worker, which asks Android for the
-  owning UID once per flow (with retries). The answer goes to the native flow table, so later
-  packets carry it, and to the writer, which fills it into the flow's packets it is still holding.
-- **Context:** a Kotlin sampler collects location, sensor, cell and Wi-Fi state on its own thread and
-  hands one JSON record per second to the writer. The writer assigns each packet the latest record
-  by timestamp, so the packet path is unchanged.
+- **Packet capture:** each packet is tapped where it crosses the TUN interface. The packet path never
+  calls into Java, allocates memory, formats text or touches the disk. It copies the packet prefix
+  into a ring buffer and moves on. If the writer falls behind, records are dropped and counted, and
+  forwarding is never slowed down.
+- **Metadata:** collectors run on their own threads, encode compact binary records into pooled
+  buffers and hand them to a writer thread. They never block. If the pool is exhausted, the record is
+  dropped and reported as `DROPPED_EVENTS`, while packet capture is unaffected.
+- **App attribution:** each new flow's 5-tuple and exact first-packet time go to a Kotlin worker,
+  which asks Android for the owning UID once per flow (with retries) and records a `FLOW_MAPPING`,
+  resolved or not. The analyzer uses it to attribute every packet of the flow, including those before
+  the answer arrived.
+- **Correlation happens afterwards:** the phone only records. Interpolation, staleness and per-packet
+  context are computed by the analyzer, so the files stay small and the capture path stays cheap.
 
 Design decisions and their reasons are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Performance
 
-Measured on a Pixel 9 Pro (Android 17) over Wi-Fi, with three repeats per configuration. Full method,
+Measured on a Pixel 9 Pro (Android 17) over Wi-Fi, with three repeats per configuration, using the
+previous PCAPNG writer (the forwarding and tap path are unchanged; a rerun with the PCAP + `.meta`
+format and measurement collectors is pending). Full method,
 raw data and environment are in [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md) and
 [`validation/perf/results/`](validation/perf/results/).
 
@@ -387,13 +317,13 @@ versions have not been measured yet. See [`docs/STATUS.md`](docs/STATUS.md).
 
 ## Privacy
 
-Packet prefixes can contain domain names, cookies, tokens or message content. The 256-byte default
-keeps files small but is **not** a privacy guarantee. While recording, files stay in app-private
+Packet prefixes can contain domain names, cookies, tokens or message content. **Headers only** keeps no
+payload; the 128-byte default keeps a little, and is **not** a privacy guarantee. While recording, files stay in app-private
 storage. After the move, files in `Download/MiniPcap/` can be copied by anyone with the unlocked phone
 and a USB cable, and read by apps with all-files access. Turn the move off if that matters, and delete
-captures you no longer need. With context recording on, a capture also contains your **precise
-location track** and nearby cell and Wi-Fi identifiers. Turn **Record position, motion and radio**
-off if you don't need them. MiniPcap does not intercept TLS and sends nothing anywhere unless you
+captures you no longer need. With GPS and radio measurements on, the `.meta` file also contains your
+**precise location track** and nearby cell and Wi-Fi identifiers. Switch **GPS** and **Radio** off if
+you don't need them. MiniPcap does not intercept TLS and sends nothing anywhere unless you
 press **Upload**.
 
 ## Limitations
@@ -405,9 +335,14 @@ press **Upload**.
 - **Unresolved apps:** very short UDP flows (e.g. some system DNS queries) can end before Android
   reports their UID, so they stay `unresolved`.
 - **One VPN at a time:** starting another VPN ends the capture (`stop_reason: vpn_revoked`).
-- **Context is sampled, not per packet:** about once per second. Cell measurements refresh only as
-  often as the modem and Android allow. Neighbor cells are what the modem reports, and Wi-Fi neighbors
-  (scans) are not recorded. Recording location and sensors costs battery.
+- **Measurements are not per packet:** each source reports at its own rate. Cell measurements
+  refresh only as often as the modem and Android allow, often every few seconds with the screen off.
+  Neighbor cells are what the modem reports, and Wi-Fi neighbors (scans) are not recorded. Recording
+  location and high-rate motion costs battery.
+- **Flows need headers:** the analyzer matches packets to apps by their 5-tuple, which is why every
+  record keeps the transport header. Non-initial IP fragments have no ports and stay unattributed.
+- **Older captures:** sessions recorded before this format (`.pcapng` + `.meta.json`) can still be
+  shared, moved and read with `validation/scripts/pcapng_tool.py`, but not uploaded.
 - **Recovered captures:** captures saved after a force-stop are kept and can be moved or shared, but
   **Upload latest** only picks complete ones.
 
@@ -468,24 +403,26 @@ Debug builds accept commands such as:
 adb shell am start -n dev.minipcap/.ui.MainActivity --es cmd start
 ```
 
-The commands are `start`, `stop`, `stall`, `upload`, `server`, `move` and `automove`. The `server`
+The commands are `start`, `stop`, `stall`, `upload`, `server`, `move` and `automove`; `start` also
+takes `--ei snaplen`, `--ez gps/radio/motion`, `--ei motion_hz` and `--es motion_mode`. The `server`
 command puts the token on the adb command line, where adbd logs it, so use it only with throwaway
 test tokens.
 
 ## Repository layout
 
 ```
-app/                       Android app (Kotlin): VPN service, notification, UID worker, sidecar,
-                           recovery, move to Downloads, upload, UI
+analyzer/                  mpcanalyze.py: reads .pcap + .meta, correlation, timeline, context-at, export
+app/                       Android app (Kotlin): VPN service, notification, UID worker, metadata
+                           writer + collectors (meta/), recovery, move to Downloads, upload, UI
 native/                    C data plane: engine.c (lwIP + socket relay + tap), capture.c (flow table,
-                           ring, writer), pcapng.c, packet.c, flow.c, ring.c, jni.c
+                           ring, writer), pcap.c (PCAP + SLL), packet.c, flow.c, ring.c, jni.c
   tests/                   host unit tests        tools/nettool.c   workload generator for benchmarks
 third_party/lwip/          vendored lwIP fork (heiher/lwip @ e6d5fc6, BSD-3-Clause)
-validation/scripts/        pcapng_tool.py (independent reader / sidecar join), check_native.sh,
-                           device_lifecycle.py
+validation/scripts/        check_native.sh (native gate), device_lifecycle.py,
+                           pcapng_tool.py (reader for captures made before the PCAP + .meta format)
 validation/upload-server/  reference HTTPS receiver, its tests, test-certificate script
 validation/perf/           benchmark and soak scripts, recorded results
-docs/                      STATUS, TEST_RESULTS, DECISIONS, PERFORMANCE_PLAN, UPLOAD_PROTOCOL
+docs/                      META_FORMAT, STATUS, TEST_RESULTS, DECISIONS, PERFORMANCE_PLAN, UPLOAD_PROTOCOL
 ```
 
 ## License

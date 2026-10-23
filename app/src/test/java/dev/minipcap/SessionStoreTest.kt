@@ -1,6 +1,8 @@
 package dev.minipcap
 
-import dev.minipcap.storage.PcapngRecovery
+import dev.minipcap.meta.MetaFormat
+import dev.minipcap.storage.PcapRecovery
+import dev.minipcap.storage.SessionRecord
 import dev.minipcap.storage.SessionState
 import dev.minipcap.storage.SessionStore
 import org.json.JSONObject
@@ -16,8 +18,8 @@ class SessionStoreTest {
 
     private fun completeSession(s: SessionStore, id: String, created: Long, finalizedAt: Long) {
         s.create(id, "F", created)
-        s.pcapFinal(id).writeBytes(TestPcapng.file(2))
-        s.metaFinal(id).writeText(JSONObject().put("capture_id", id).put("status", "complete").toString())
+        s.pcapFinal(id).writeBytes(TestCapture.pcap(2))
+        TestCapture.meta(s.metaFinal(id), id)
         s.markFinalized(id, SessionState.COMPLETE, finalizedAt, "user_stop")
     }
 
@@ -29,7 +31,7 @@ class SessionStoreTest {
         s.create(b, "F", 2000) // created later...
         s.create(a, "F", 1000)
         for (id in listOf(a, b)) {
-            s.pcapFinal(id).writeBytes(TestPcapng.file(1))
+            s.pcapFinal(id).writeBytes(TestCapture.pcap(1))
             s.metaFinal(id).writeText("{}")
         }
         s.markFinalized(b, SessionState.COMPLETE, 5000, null)
@@ -45,10 +47,10 @@ class SessionStoreTest {
         completeSession(s, done, 1, 10)
         val rec = s.create("00000000-0000-4000-8000-000000000002", "F", 2)
         s.update(rec.id) { it.copy(state = SessionState.RECORDING) }
-        s.pcapPartial(rec.id).writeBytes(TestPcapng.file(1))
+        s.pcapPartial(rec.id).writeBytes(TestCapture.pcap(1))
         val unpaired = "00000000-0000-4000-8000-000000000003"
         s.create(unpaired, "F", 3)
-        s.pcapFinal(unpaired).writeBytes(TestPcapng.file(1)) // sidecar missing
+        s.pcapFinal(unpaired).writeBytes(TestCapture.pcap(1)) // metadata file missing
         s.markFinalized(unpaired, SessionState.COMPLETE, 30, null)
         assertEquals(done, s.latestCompleted()!!.id)
         s.delete(done)
@@ -56,50 +58,45 @@ class SessionStoreTest {
     }
 
     @Test
-    fun scanTruncatesPartialTrailingBlock() {
+    fun scanTruncatesPartialTrailingRecord() {
         val dir = Files.createTempDirectory("scan").toFile()
-        val f = dir.resolve("x.pcapng")
-        val good = TestPcapng.file(5)
-        f.writeBytes(good + TestPcapng.epb(100).copyOf(30)) // killed mid-block
-        val r = PcapngRecovery.truncateToValidPrefix(f)
+        val f = dir.resolve("x.pcap")
+        val good = TestCapture.pcap(5)
+        f.writeBytes(good + TestCapture.record(100).copyOf(30)) // killed mid-record
+        val r = PcapRecovery.truncateToValidPrefix(f)
         assertEquals(good.size.toLong(), r.validBytes)
         assertEquals(30L, r.truncatedBytes)
         assertEquals(5L, r.packets)
         assertEquals(good.size.toLong(), f.length())
-        // Corrupt trailing length -> block rejected.
-        val bad = good.copyOf()
-        bad[bad.size - 1] = 0x7f
-        f.writeBytes(bad)
-        assertEquals(4L, PcapngRecovery.scan(f).packets)
-        // Not a PCAPNG at all -> nothing valid.
+        // Not a PCAP at all -> nothing valid.
         f.writeBytes(ByteArray(64) { 1 })
-        assertEquals(0L, PcapngRecovery.scan(f).validBytes)
+        assertEquals(0L, PcapRecovery.scan(f).validBytes)
+        // Header only (no packets yet) is a valid, empty capture.
+        f.writeBytes(TestCapture.pcapHeader())
+        assertEquals(24L, PcapRecovery.scan(f).validBytes)
     }
 
     @Test
-    fun recoversForceStoppedSessionFromCheckpoint() {
+    fun recoversForceStoppedSessionFromPartialFiles() {
         val s = store()
         val id = "11111111-0000-4000-8000-000000000000"
         s.create(id, "F", 1000)
         s.update(id) { it.copy(state = SessionState.RECORDING) }
-        s.pcapPartial(id).writeBytes(TestPcapng.file(3) + byteArrayOf(6, 0, 0, 0, 99))
-        s.metaCheckpoint(id).writeText(JSONObject()
-            .put("schema_version", 1).put("capture_id", id).put("status", "recording")
-            .put("uid_map", JSONObject().put("10234", JSONObject().put("packages", listOf("a.b"))))
-            .put("flow_uid_map", JSONObject().put("1", JSONObject().put("uid", 10234)))
-            .put("stats", JSONObject()).toString())
-        val out = s.recoverInterrupted(null, 9000)
+        s.pcapPartial(id).writeBytes(TestCapture.pcap(3) + byteArrayOf(1, 0, 0, 0, 99))
+        TestCapture.meta(s.metaPartial(id), id, end = null)
+        s.metaPartial(id).appendBytes(byteArrayOf(0x10, 0, 0, 0, 64)) // half-written record
+        val out = s.recoverInterrupted(null, 9000, 123_000)
         assertEquals(1, out.size)
         assertEquals(SessionState.RECOVERED, out[0].state)
         assertFalse(s.pcapPartial(id).exists())
-        assertFalse(s.metaCheckpoint(id).exists())
-        assertEquals(3L, PcapngRecovery.scan(s.pcapFinal(id)).packets)
-        assertEquals(0L, PcapngRecovery.scan(s.pcapFinal(id)).truncatedBytes)
-        val meta = JSONObject(s.metaFinal(id).readText())
-        assertEquals("recovered", meta.getString("status"))
-        assertEquals("$id.pcapng", meta.getString("capture_file"))
-        assertEquals(10234, meta.getJSONObject("flow_uid_map").getJSONObject("1").getInt("uid"))
-        assertEquals(3, meta.getJSONObject("recovery").getInt("records_in_file"))
+        assertFalse(s.metaPartial(id).exists())
+        assertEquals("$id.pcap", s.pcapFinal(id).name)
+        assertEquals(3L, PcapRecovery.scan(s.pcapFinal(id)).packets)
+        assertEquals(0L, PcapRecovery.scan(s.pcapFinal(id)).truncatedBytes)
+        val meta = MetaFormat.scan(s.metaFinal(id))
+        assertEquals(MetaFormat.END_RECOVERED, meta.endStatus)
+        assertEquals(0L, meta.truncatedBytes)
+        assertEquals(3L, meta.records) // info, clock, appended SESSION_END
         // Recovered sessions are never "latest complete" (not uploadable as complete).
         assertNull(s.latestCompleted())
         // Idempotent: nothing more to recover.
@@ -115,9 +112,9 @@ class SessionStoreTest {
         val stopping = "33333333-0000-4000-8000-000000000000"
         s.create(stopping, "F", 2)
         s.update(stopping) { it.copy(state = SessionState.STOPPING) }
-        // Killed after sidecar + rename but before the COMPLETE state commit.
-        s.pcapFinal(stopping).writeBytes(TestPcapng.file(2))
-        s.metaFinal(stopping).writeText(JSONObject().put("capture_id", stopping).put("status", "complete").toString())
+        // Killed after both files were finalized but before the COMPLETE state commit.
+        s.pcapFinal(stopping).writeBytes(TestCapture.pcap(2))
+        TestCapture.meta(s.metaFinal(stopping), stopping)
         val out = s.recoverInterrupted(active, 100)
         assertEquals(listOf(stopping), out.map { it.id })
         assertEquals(SessionState.COMPLETE, s.get(stopping)!!.state)
@@ -129,9 +126,24 @@ class SessionStoreTest {
     fun noCaptureFileMeansFailedNotComplete() {
         val s = store()
         val id = "44444444-0000-4000-8000-000000000000"
-        s.create(id, "B", 1) // forwarding-only benchmark: no PCAPNG
+        s.create(id, "B", 1) // forwarding-only benchmark: no capture file
         s.update(id) { it.copy(state = SessionState.RECORDING) }
         s.recoverInterrupted(null, 2)
         assertEquals(SessionState.FAILED, s.get(id)!!.state)
+    }
+
+    @Test
+    fun legacySessionsKeepTheirFileNames() {
+        val s = store()
+        val id = "55555555-0000-4000-8000-000000000000"
+        // A state file written before the format field existed.
+        s.dir.resolve("$id.state.json").writeText(JSONObject().put("capture_id", id).put("seq", 1).put("state", "COMPLETE")
+            .put("created_ms", 1).put("finalized_ms", 2).put("finalize_seq", 1).toString())
+        assertEquals(SessionRecord.FORMAT_LEGACY, s.get(id)!!.format)
+        assertEquals("$id.pcapng", s.pcapFinal(id).name)
+        assertEquals("$id.meta.json", s.metaFinal(id).name)
+        val fresh = s.create("66666666-0000-4000-8000-000000000000", "F", 3)
+        assertEquals(SessionRecord.FORMAT_PCAP_META, fresh.format)
+        assertEquals("${fresh.id}.meta", s.metaFinal(fresh.id).name)
     }
 }

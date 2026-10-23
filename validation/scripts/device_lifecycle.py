@@ -15,7 +15,9 @@ import time
 
 PKG = "dev.minipcap"
 NETTOOL = "/data/local/tmp/nettool"
-TOOL = __file__.rsplit("/", 1)[0] + "/pcapng_tool.py"
+TOOL = __file__.rsplit("/", 1)[0] + "/../../analyzer/mpcanalyze.py"
+sys.path.insert(0, __file__.rsplit("/", 1)[0] + "/../perf")
+import bench  # noqa: E402
 
 
 def sh(*a, check=False, timeout=120):
@@ -118,14 +120,11 @@ def main():
     if ok:
         with tempfile.TemporaryDirectory() as d:
             cid = last["capture_id"]
-            for ext in ("pcapng", "meta.json"):
-                data = subprocess.run(["adb", "exec-out", "run-as", PKG, "cat", "files/captures/%s.%s" % (cid, ext)],
-                                      capture_output=True).stdout
-                open("%s/%s.%s" % (d, cid, ext), "wb").write(data)
-            v = subprocess.run([sys.executable, "-I", TOOL, "validate", "%s/%s.pcapng" % (d, cid)], capture_output=True, text=True)
-            s = subprocess.run([sys.executable, "-I", TOOL, "validate-sidecar", "%s/%s.meta.json" % (d, cid)], capture_output=True, text=True)
-            meta = json.load(open("%s/%s.meta.json" % (d, cid)))
-            allok &= check("V09: PCAPNG + sidecar valid", '"ok": true' in v.stdout and s.stdout.strip().endswith("OK"),
+            pc = bench.pull(cid, "pcap", "%s/%s.pcap" % (d, cid))
+            mp = bench.pull(cid, "meta", "%s/%s.meta" % (d, cid))
+            v = subprocess.run([sys.executable, "-I", TOOL, "validate", pc, mp], capture_output=True, text=True)
+            meta = bench.session_summary(mp)
+            allok &= check("V09: PCAP + meta valid", '"ok": true' in v.stdout,
                            "records %s, drops %s, finalize %s ms" % (meta["stats"]["packets_recorded"],
                                                                      meta["stats"]["capture_queue_drops"],
                                                                      meta["stats"].get("stop_finalize_ms")))

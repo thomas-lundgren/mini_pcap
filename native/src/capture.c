@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 #include "mpc/packet.h"
-#include "mpc/pcapng.h"
+#include "mpc/pcap.h"
 
 const char *const mpc_counter_names[MPC_CNT__COUNT] = {
 #define MPC_CNT_NAME(name) #name,
@@ -67,7 +67,11 @@ mpc_capture *mpc_capture_create(const mpc_capture_config *cfg, int *err)
     c->write_file = v >= MPC_VARIANT_D_WRITER;
     c->uid_enabled = v >= MPC_VARIANT_E_UID;
     uint32_t mtu = cfg->mtu ? cfg->mtu : 1500;
-    c->snap = (cfg->snaplen == 0 || cfg->snaplen > mtu) ? mtu : cfg->snaplen;
+    if (cfg->snaplen == MPC_SNAPLEN_HEADERS)
+        c->snap = 0;
+    else
+        c->snap = (cfg->snaplen == 0 || cfg->snaplen > mtu) ? mtu : cfg->snaplen;
+    c->slot_cap = c->snap > MPC_HDR_MAX ? c->snap : MPC_HDR_MAX;
 
     /* Anchor pair for boottime -> Unix epoch conversion (taken back to back). */
     uint64_t b0 = mpc_now_boottime_ns();
@@ -86,19 +90,12 @@ mpc_capture *mpc_capture_create(const mpc_capture_config *cfg, int *err)
 
     if (c->tap_enabled) {
         size_t ring_bytes = cfg->ring_bytes ? cfg->ring_bytes : (8u << 20);
-        if (mpc_ring_init(&c->ring, (uint32_t)(sizeof(mpc_rec_hdr) + c->snap), ring_bytes) != 0)
+        if (mpc_ring_init(&c->ring, (uint32_t)(sizeof(mpc_rec_hdr) + c->slot_cap), ring_bytes) != 0)
             goto fail;
         if (mpc_flow_table_init(&c->flows, cfg->flow_capacity ? cfg->flow_capacity : 65536) != 0)
             goto fail;
         MPC_CSET(&c->cnt, capture_ring_slots, c->ring.nslots);
         MPC_CSET(&c->cnt, capture_ring_slot_bytes, c->ring.slot_size);
-    }
-    if (c->uid_enabled && c->write_file && cfg->uid_hold_ms) {
-        if (mpc_ring_init(&c->uid_wr, sizeof(mpc_uid_resolution), 4096 * sizeof(mpc_uid_resolution)) != 0)
-            goto fail;
-        c->wuid = calloc(MPC_WUID_SLOTS, sizeof(mpc_wuid_entry));
-        if (!c->wuid)
-            goto fail;
     }
     if (c->uid_enabled) {
         if (mpc_ring_init(&c->uid_req, sizeof(mpc_uid_request), 4096 * sizeof(mpc_uid_request)) != 0)
@@ -122,12 +119,6 @@ mpc_capture *mpc_capture_create(const mpc_capture_config *cfg, int *err)
         c->wbuf = malloc(wb);
         if (!c->wbuf)
             goto fail;
-        if (mpc_ring_init(&c->ctx, (uint32_t)(sizeof(mpc_ctx_hdr) + MPC_CTX_SLOT_BYTES),
-                          (size_t)MPC_CTX_SLOTS * (sizeof(mpc_ctx_hdr) + MPC_CTX_SLOT_BYTES)) != 0)
-            goto fail;
-        if (pthread_mutex_init(&c->ctx_lock, NULL) != 0)
-            goto fail;
-        c->ctx_lock_init = 1;
     }
     return c;
 fail:
@@ -139,7 +130,7 @@ fail_keep_err:
 
 /* ---------------------------------------------------------------- hot path */
 
-static void queue_uid_request(mpc_capture *c, const mpc_flow_entry *e)
+static void queue_uid_request(mpc_capture *c, const mpc_flow_entry *e, uint64_t ts_ns)
 {
     mpc_uid_request *rq = mpc_ring_reserve(&c->uid_req);
     if (!rq) {
@@ -148,6 +139,7 @@ static void queue_uid_request(mpc_capture *c, const mpc_flow_entry *e)
     }
     rq->flow_id = e->flow_id;
     rq->key = e->key;
+    rq->first_seen_ns = ts_ns;
     mpc_ring_commit(&c->uid_req);
     MPC_CINC(&c->cnt, uid_requests_queued, 1);
     c->uid_req_pending_signal = 1;
@@ -167,6 +159,7 @@ uint8_t *mpc_capture_begin(mpc_capture *c, int dir, uint64_t ts_ns, const uint8_
     uint64_t flow_id = 0;
     int32_t uid = MPC_UID_UNKNOWN;
     mpc_pkt_info info;
+    uint32_t keep = c->snap;
     if (mpc_parse_packet(hdr, hdr_len, &info) != 0) {
         MPC_CINC(&c->cnt, unparsable_packets, 1);
     } else {
@@ -180,13 +173,18 @@ uint8_t *mpc_capture_begin(mpc_capture *c, int dir, uint64_t ts_ns, const uint8_
                 uid = e->uid;
                 if (is_new && c->uid_enabled) {
                     e->uid_state = MPC_UID_STATE_REQUESTED;
-                    queue_uid_request(c, e);
+                    queue_uid_request(c, e, ts_ns);
                 }
             }
         } else {
             MPC_CINC(&c->cnt, nonflow_packets, 1);
         }
+        /* Never cut inside the IP/transport headers, whatever the configured length. */
+        if (info.hdr_len > keep)
+            keep = info.hdr_len < c->slot_cap ? info.hdr_len : c->slot_cap;
     }
+    if (keep == 0) /* headers-only and unparsable: keep what a header could be */
+        keep = total_len < 40 ? total_len : 40;
 
     mpc_rec_hdr *h = mpc_ring_reserve(&c->ring);
     if (!h) {
@@ -196,7 +194,7 @@ uint8_t *mpc_capture_begin(mpc_capture *c, int dir, uint64_t ts_ns, const uint8_
             MPC_CINC(&c->cnt, capture_queue_drops_dl, 1);
         return NULL;
     }
-    uint32_t cl = total_len < c->snap ? total_len : c->snap;
+    uint32_t cl = total_len < keep ? total_len : keep;
     h->ts_ns = ts_ns;
     h->flow_id = flow_id;
     h->uid = uid;
@@ -288,92 +286,29 @@ static void writer_flush(mpc_capture *c)
     c->wlen = 0;
 }
 
-static inline uint64_t to_epoch_us(const mpc_capture *c, uint64_t ts_ns)
+/* Monotonic capture time -> Unix epoch ns through the session's single anchor, so
+ * wall-clock steps during capture never reorder PCAP timestamps. */
+static inline uint64_t to_epoch_ns(const mpc_capture *c, uint64_t ts_ns)
 {
     int64_t real = c->anchor_real_ns + ((int64_t)ts_ns - c->anchor_boot_ns);
-    return real > 0 ? (uint64_t)real / 1000u : 0;
-}
-
-static int ensure_space(mpc_capture *c, size_t need)
-{
-    if (atomic_load_explicit(&c->cnt.storage_errors, memory_order_relaxed))
-        return -1;
-    if (c->wlen + need > c->cfg.writer_buf_bytes)
-        writer_flush(c);
-    return 0;
-}
-
-/* Late binding: UIDs resolved after a record was queued (writer-side cache). */
-static void writer_take_uids(mpc_capture *c)
-{
-    if (!c->wuid)
-        return;
-    uint64_t tail;
-    uint64_t n = mpc_ring_available(&c->uid_wr, &tail);
-    for (uint64_t i = 0; i < n; i++) {
-        const mpc_uid_resolution *r = mpc_ring_slot(&c->uid_wr, tail + i);
-        if (r->uid < 0)
-            continue;
-        mpc_wuid_entry *e = &c->wuid[r->flow_id & (MPC_WUID_SLOTS - 1)];
-        e->flow_id = r->flow_id;
-        e->uid = r->uid;
-    }
-    mpc_ring_release(&c->uid_wr, tail + n);
+    return real > 0 ? (uint64_t)real : 0;
 }
 
 static void serialize_record(mpc_capture *c, const mpc_rec_hdr *h)
 {
-    char comment[MPC_COMMENT_MAX];
-    int32_t uid = h->uid;
-    if (uid < 0 && h->flow_id && c->wuid) {
-        const mpc_wuid_entry *e = &c->wuid[h->flow_id & (MPC_WUID_SLOTS - 1)];
-        if (e->flow_id == h->flow_id) {
-            uid = e->uid;
-            MPC_CINC(&c->cnt, records_uid_late_bound, 1);
-        }
-    }
-    size_t clen = mpc_format_comment(comment, h->flow_id, uid, c->cur_ctx);
-    if (ensure_space(c, mpc_pcapng_epb_max(h->cap_len, clen)) != 0) {
+    if (atomic_load_explicit(&c->cnt.storage_errors, memory_order_relaxed)) {
         MPC_CINC(&c->cnt, storage_dropped_records, 1);
         return;
     }
-    uint32_t flags = h->dir == MPC_DIR_UPLINK ? MPC_EPB_FLAG_OUTBOUND : MPC_EPB_FLAG_INBOUND;
-    size_t n = mpc_pcapng_epb(c->wbuf + c->wlen, c->cfg.writer_buf_bytes - c->wlen, 0,
-                              to_epoch_us(c, h->ts_ns), (const uint8_t *)(h + 1), h->cap_len,
-                              h->orig_len, comment, clen, flags);
+    size_t need = mpc_pcap_record_max(h->cap_len);
+    if (c->wlen + need > c->cfg.writer_buf_bytes)
+        writer_flush(c);
+    size_t n = mpc_pcap_record(c->wbuf + c->wlen, c->cfg.writer_buf_bytes - c->wlen,
+                               to_epoch_ns(c, h->ts_ns), h->dir == MPC_DIR_UPLINK,
+                               (const uint8_t *)(h + 1), h->cap_len, h->orig_len);
     c->wlen += n;
     MPC_CINC(&c->cnt, records_written, 1);
     MPC_CINC(&c->cnt, captured_bytes, h->cap_len);
-}
-
-/* Writes queued context records with ts_ns <= upto (in queue order) on interface 1. */
-static void write_contexts(mpc_capture *c, uint64_t upto)
-{
-    if (!c->ctx.mem)
-        return;
-    uint64_t tail;
-    uint64_t n = mpc_ring_available(&c->ctx, &tail);
-    uint64_t i = 0;
-    for (; i < n; i++) {
-        const mpc_ctx_hdr *h = mpc_ring_slot(&c->ctx, tail + i);
-        if (h->ts_ns > upto)
-            break;
-        const char *info = (const char *)(h + 1);
-        const uint8_t *json = (const uint8_t *)info + h->info_len;
-        if (ensure_space(c, mpc_pcapng_upper_pdu_max(h->info_len, h->json_len)) != 0) {
-            MPC_CINC_SHARED(&c->cnt, ctx_records_dropped);
-        } else {
-            c->wlen += mpc_pcapng_upper_pdu_epb(c->wbuf + c->wlen, c->cfg.writer_buf_bytes - c->wlen, 1,
-                                                to_epoch_us(c, h->ts_ns), info, h->info_len, json,
-                                                h->json_len);
-            MPC_CINC(&c->cnt, ctx_records_written, 1);
-        }
-        /* Referenced by later packets even if this write failed, so c= stays monotonic. */
-        if (h->kind == MPC_CTX_STATE)
-            c->cur_ctx = h->seq;
-    }
-    if (i)
-        mpc_ring_release(&c->ctx, tail + i);
 }
 
 static void *writer_main(void *arg)
@@ -381,7 +316,6 @@ static void *writer_main(void *arg)
     mpc_capture *c = arg;
     pthread_setname_np(pthread_self(), "mpc-writer");
     uint64_t last_flush = mpc_now_boottime_ns();
-    uint64_t hold_ns = (uint64_t)c->cfg.uid_hold_ms * 1000000ull;
     struct pollfd pfd = {.fd = c->writer_efd, .events = POLLIN};
     for (;;) {
         uint32_t stall = atomic_exchange_explicit(&c->stall_request_ms, 0, memory_order_relaxed);
@@ -392,69 +326,42 @@ static void *writer_main(void *arg)
                 ;
             MPC_CINC(&c->cnt, writer_stall_ms, stall);
         }
-        /* Read stop before the ring: once set, the producer has fully quiesced. */
-        int stopping = atomic_load_explicit(&c->writer_stop, memory_order_acquire);
-        writer_take_uids(c);
-        uint64_t now = mpc_now_boottime_ns();
         uint64_t tail;
         uint64_t n = mpc_ring_available(&c->ring, &tail);
-        /* Hold records for late UID binding, unless stopping or the ring is half full
-         * (holding must never turn into capture drops). */
-        int bypass = n >= (c->ring.nslots >> 1);
-        uint64_t cutoff = (stopping || bypass || !hold_ns || !c->write_file) ? UINT64_MAX
-                          : (now > hold_ns ? now - hold_ns : 0);
-        uint64_t done = 0;
-        uint64_t next_ts = 0;
-        uint64_t lim = n > WRITER_BATCH ? WRITER_BATCH : n;
-        if (c->write_file) {
-            for (; done < lim; done++) {
-                const mpc_rec_hdr *h = mpc_ring_slot(&c->ring, tail + done);
-                if (h->ts_ns > cutoff) {
-                    next_ts = h->ts_ns;
+        if (n == 0) {
+            if (atomic_load_explicit(&c->writer_stop, memory_order_acquire)) {
+                /* Re-check after observing stop: the producer has fully quiesced. */
+                if (mpc_ring_available(&c->ring, &tail) == 0)
                     break;
-                }
-                write_contexts(c, h->ts_ns);
-                if (atomic_load_explicit(&c->cnt.storage_errors, memory_order_relaxed))
-                    MPC_CINC(&c->cnt, storage_dropped_records, 1);
-                else
-                    serialize_record(c, h);
+                continue;
             }
-            if (bypass && hold_ns && done)
-                MPC_CINC(&c->cnt, records_hold_bypassed, done);
-            if (done == n)
-                write_contexts(c, cutoff);
-        } else {
-            done = lim;
-            MPC_CINC(&c->cnt, records_discarded_null, done);
+            uint64_t now = mpc_now_boottime_ns();
+            if (c->wlen && now - last_flush >= WRITER_FLUSH_INTERVAL_NS) {
+                writer_flush(c);
+                last_flush = now;
+            }
+            atomic_store_explicit(&c->writer_sleeping, 1, memory_order_relaxed);
+            poll(&pfd, 1, WRITER_IDLE_WAIT_MS);
+            atomic_store_explicit(&c->writer_sleeping, 0, memory_order_relaxed);
+            if (pfd.revents & POLLIN)
+                efd_drain(c->writer_efd);
+            continue;
         }
-        if (done)
-            mpc_ring_release(&c->ring, tail + done);
+        if (n > WRITER_BATCH)
+            n = WRITER_BATCH;
+        if (c->write_file) {
+            for (uint64_t i = 0; i < n; i++)
+                serialize_record(c, mpc_ring_slot(&c->ring, tail + i));
+        } else {
+            MPC_CINC(&c->cnt, records_discarded_null, n);
+        }
+        mpc_ring_release(&c->ring, tail + n);
+        uint64_t now = mpc_now_boottime_ns();
         if (c->wlen && now - last_flush >= WRITER_FLUSH_INTERVAL_NS) {
             writer_flush(c);
             last_flush = now;
         }
-        if (done == lim && done)
-            continue; /* more may be ready */
-        if (stopping && n == 0) {
-            if (mpc_ring_available(&c->ring, &tail) == 0)
-                break;
-            continue;
-        }
-        /* Nothing ready: sleep until the oldest held record is due (or a wakeup). */
-        int wait_ms = WRITER_IDLE_WAIT_MS;
-        if (next_ts) {
-            uint64_t due = next_ts + hold_ns;
-            uint64_t ms = due > now ? (due - now) / 1000000ull + 1 : 0;
-            if (ms < (uint64_t)wait_ms)
-                wait_ms = (int)ms;
-        }
-        atomic_store_explicit(&c->writer_sleeping, 1, memory_order_relaxed);
-        poll(&pfd, 1, wait_ms);
-        atomic_store_explicit(&c->writer_sleeping, 0, memory_order_relaxed);
-        if (pfd.revents & POLLIN)
-            efd_drain(c->writer_efd);
     }
-    write_contexts(c, UINT64_MAX);
     writer_flush(c);
     return NULL;
 }
@@ -464,14 +371,7 @@ int mpc_capture_start_writer(mpc_capture *c)
     if (!c->tap_enabled)
         return 0;
     if (c->write_file) {
-        size_t n = mpc_pcapng_shb(c->wbuf, c->cfg.writer_buf_bytes, c->cfg.userappl, c->cfg.os,
-                                  c->cfg.hardware);
-        n += mpc_pcapng_idb(c->wbuf + n, c->cfg.writer_buf_bytes - n, MPC_LINKTYPE_RAW, c->snap,
-                            c->cfg.if_name ? c->cfg.if_name : "tun0", 6);
-        /* Interface 1: context records (position/motion/radio, app identity) as JSON. */
-        n += mpc_pcapng_idb(c->wbuf + n, c->cfg.writer_buf_bytes - n, MPC_LINKTYPE_UPPER_PDU, 0,
-                            "ctx0", 6);
-        c->wlen = n;
+        c->wlen = mpc_pcap_file_header(c->wbuf, c->slot_cap + MPC_SLL_HDR);
         writer_flush(c); /* headers on disk immediately: a valid (empty) capture */
     }
     if (pthread_create(&c->writer_thread, NULL, writer_main, c) != 0)
@@ -515,11 +415,6 @@ void mpc_capture_destroy(mpc_capture *c)
     mpc_ring_free(&c->ring);
     mpc_ring_free(&c->uid_req);
     mpc_ring_free(&c->uid_resp);
-    mpc_ring_free(&c->uid_wr);
-    mpc_ring_free(&c->ctx);
-    free(c->wuid);
-    if (c->ctx_lock_init)
-        pthread_mutex_destroy(&c->ctx_lock);
     mpc_flow_table_free(&c->flows);
     free(c->wbuf);
     if (c->uid_req_efd >= 0)
@@ -589,18 +484,6 @@ int mpc_capture_uid_deliver(mpc_capture *c, const mpc_uid_resolution *res, int n
     }
     if (ok)
         efd_signal(c->uid_resp_efd);
-    /* Same resolutions for the writer's late binding (its own SPSC ring). */
-    if (c->wuid) {
-        for (int i = 0; i < ok; i++) {
-            mpc_uid_resolution *slot = mpc_ring_reserve(&c->uid_wr);
-            if (!slot) {
-                MPC_CINC(&c->cnt, uid_writer_drops, (uint64_t)(ok - i));
-                break;
-            }
-            *slot = res[i];
-            mpc_ring_commit(&c->uid_wr);
-        }
-    }
     return ok;
 }
 
@@ -608,34 +491,6 @@ void mpc_capture_request_stall(mpc_capture *c, uint32_t ms)
 {
     atomic_store_explicit(&c->stall_request_ms, ms, memory_order_relaxed);
     efd_signal(c->writer_efd);
-}
-
-int mpc_capture_context(mpc_capture *c, int kind, uint32_t seq, uint64_t ts_ns, const char *info,
-                        size_t info_len, const uint8_t *json, size_t json_len)
-{
-    if (!c->ctx.mem || (kind != MPC_CTX_STATE && kind != MPC_CTX_INFO))
-        return -1;
-    if (info_len > 255)
-        info_len = 255;
-    pthread_mutex_lock(&c->ctx_lock);
-    mpc_ctx_hdr *h = NULL;
-    if (info_len + json_len <= MPC_CTX_SLOT_BYTES && !atomic_load(&c->writer_stop))
-        h = mpc_ring_reserve(&c->ctx);
-    if (!h) {
-        pthread_mutex_unlock(&c->ctx_lock);
-        MPC_CINC_SHARED(&c->cnt, ctx_records_dropped);
-        return -1;
-    }
-    h->ts_ns = ts_ns;
-    h->seq = seq;
-    h->kind = (uint8_t)kind;
-    h->info_len = (uint16_t)info_len;
-    h->json_len = (uint32_t)json_len;
-    memcpy(h + 1, info, info_len);
-    memcpy((uint8_t *)(h + 1) + info_len, json, json_len);
-    mpc_ring_commit(&c->ctx);
-    pthread_mutex_unlock(&c->ctx_lock);
-    return 0;
 }
 
 void mpc_capture_close_uid(mpc_capture *c)

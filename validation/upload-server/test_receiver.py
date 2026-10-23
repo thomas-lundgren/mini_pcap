@@ -8,6 +8,7 @@ import os
 import resource
 import shutil
 import socket
+import struct
 import ssl
 import sys
 import tempfile
@@ -23,16 +24,23 @@ CERTS = os.path.join(HERE, "certs")
 TOKEN = "test-token-" + uuid.uuid4().hex
 
 
-def pcapng_bytes(n_extra=0):
-    # Minimal SHB (28 bytes, no options) + filler EPB-like padding as an opaque body.
-    shb = (b"\x0a\x0d\x0d\x0a" + (28).to_bytes(4, "little") + b"\x4d\x3c\x2b\x1a" + b"\x01\x00\x00\x00"
-           + b"\xff" * 8 + (28).to_bytes(4, "little"))
-    return shb + os.urandom(n_extra)
+def pcap_bytes(n_extra=0):
+    # PCAP global header (nanosecond, LINKTYPE_LINUX_SLL) + opaque body.
+    hdr = struct.pack("<IHHiIII", 0xA1B23C4D, 2, 4, 0, 0, 144, 113)
+    return hdr + os.urandom(n_extra)
 
 
-def sidecar(cid, status="complete", capture_file=None):
-    return json.dumps({"schema_version": 1, "capture_id": cid, "status": status,
-                       "capture_file": capture_file or "%s.pcapng" % cid}).encode()
+def record(rtype, body):
+    body += b"\0" * (-(16 + len(body)) % 8)
+    return struct.pack("<HHIq", rtype, 0, 16 + len(body), 1) + body
+
+
+def meta_bytes(cid, status=1, session=None, end=True):
+    hdr = b"MPCMETA\0" + struct.pack("<HHI", 1, 0, 64) + uuid.UUID(session or cid).bytes + struct.pack("<qqqII", 0, 0, 0, 0, 0)
+    out = hdr + record(0x0001, struct.pack("<H", 0))
+    if end:
+        out += record(0x0003, bytes([status]) + struct.pack("<H", 4) + b"stop" + struct.pack("<H", 0))
+    return out
 
 
 class Server:
@@ -63,10 +71,10 @@ def client_ctx():
 
 def multipart(cid, cap, meta, manifest=None, boundary="mpcBOUNDARY123", parts=None, fnames=None):
     if manifest is None:
-        manifest = {"protocol_version": 1, "capture_id": cid, "files": {
-            "capture": {"filename": "%s.pcapng" % cid, "size_bytes": len(cap), "sha256": hashlib.sha256(cap).hexdigest()},
-            "metadata": {"filename": "%s.meta.json" % cid, "size_bytes": len(meta), "sha256": hashlib.sha256(meta).hexdigest()}}}
-    fnames = fnames or {"capture": "%s.pcapng" % cid, "metadata": "%s.meta.json" % cid}
+        manifest = {"protocol_version": 2, "capture_id": cid, "files": {
+            "capture": {"filename": "%s.pcap" % cid, "size_bytes": len(cap), "sha256": hashlib.sha256(cap).hexdigest()},
+            "metadata": {"filename": "%s.meta" % cid, "size_bytes": len(meta), "sha256": hashlib.sha256(meta).hexdigest()}}}
+    fnames = fnames or {"capture": "%s.pcap" % cid, "metadata": "%s.meta" % cid}
     order = parts or [("manifest", None, json.dumps(manifest).encode()),
                       ("capture", fnames["capture"], cap), ("metadata", fnames["metadata"], meta)]
     out = b""
@@ -104,8 +112,8 @@ class ReceiverTests(unittest.TestCase):
 
     def upload_ok(self, cid=None, cap=None):
         cid = cid or str(uuid.uuid4())
-        cap = cap or pcapng_bytes(5000)
-        meta = sidecar(cid)
+        cap = cap or pcap_bytes(5000)
+        meta = meta_bytes(cid)
         body, b = multipart(cid, cap, meta)
         return cid, cap, meta, post(self.s.port, cid, body, b)
 
@@ -114,7 +122,7 @@ class ReceiverTests(unittest.TestCase):
         c.request("GET", "/api/v1/health", headers={"Authorization": "Bearer " + TOKEN})
         r = c.getresponse()
         self.assertEqual(r.status, 200)
-        self.assertEqual(json.loads(r.read()), {"status": "ok", "protocol_version": 1})
+        self.assertEqual(json.loads(r.read()), {"status": "ok", "protocol_version": 2})
         for hdr in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": TOKEN}):
             c.request("GET", "/api/v1/health", headers=hdr)
             r = c.getresponse()
@@ -129,8 +137,8 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual(rc["sha256"]["capture"], hashlib.sha256(cap).hexdigest())
         self.assertEqual(rc["sha256"]["metadata"], hashlib.sha256(meta).hexdigest())
         d = os.path.join(self.s.data, "captures", cid)
-        self.assertEqual(open(os.path.join(d, cid + ".pcapng"), "rb").read(), cap)
-        self.assertEqual(open(os.path.join(d, cid + ".meta.json"), "rb").read(), meta)
+        self.assertEqual(open(os.path.join(d, cid + ".pcap"), "rb").read(), cap)
+        self.assertEqual(open(os.path.join(d, cid + ".meta"), "rb").read(), meta)
         self.assertEqual(self.s.staging(), [])
 
     def test_identical_retry_is_idempotent(self):
@@ -143,46 +151,47 @@ class ReceiverTests(unittest.TestCase):
 
     def test_conflicting_same_id_409(self):
         cid, cap, meta, (st, _) = self.upload_ok()
-        cap2 = pcapng_bytes(10)
+        cap2 = pcap_bytes(10)
         body, b = multipart(cid, cap2, meta)
         st2, rc2 = post(self.s.port, cid, body, b)
         self.assertEqual(st2, 409)
         d = os.path.join(self.s.data, "captures", cid)
-        self.assertEqual(open(os.path.join(d, cid + ".pcapng"), "rb").read(), cap)  # not overwritten
+        self.assertEqual(open(os.path.join(d, cid + ".pcap"), "rb").read(), cap)  # not overwritten
 
     def test_bad_hash_and_identity_422(self):
         cid = str(uuid.uuid4())
-        cap, meta = pcapng_bytes(100), sidecar(cid)
-        man = {"protocol_version": 1, "capture_id": cid, "files": {
-            "capture": {"filename": cid + ".pcapng", "size_bytes": len(cap), "sha256": "0" * 64},
-            "metadata": {"filename": cid + ".meta.json", "size_bytes": len(meta), "sha256": hashlib.sha256(meta).hexdigest()}}}
+        cap, meta = pcap_bytes(100), meta_bytes(cid)
+        man = {"protocol_version": 2, "capture_id": cid, "files": {
+            "capture": {"filename": cid + ".pcap", "size_bytes": len(cap), "sha256": "0" * 64},
+            "metadata": {"filename": cid + ".meta", "size_bytes": len(meta), "sha256": hashlib.sha256(meta).hexdigest()}}}
         body, b = multipart(cid, cap, meta, manifest=man)
         self.assertEqual(post(self.s.port, cid, body, b)[0], 422)
-        for bad_meta in (sidecar(str(uuid.uuid4())), sidecar(cid, status="recording"),
-                         sidecar(cid, capture_file="other.pcapng"), b"not json"):
+        truncated = meta_bytes(cid)[:-5]
+        for bad_meta in (meta_bytes(cid, session=str(uuid.uuid4())), meta_bytes(cid, status=2),
+                         meta_bytes(cid, end=False), truncated, b"not a meta file"):
             body, b = multipart(cid, cap, bad_meta)
             self.assertEqual(post(self.s.port, cid, body, b)[0], 422, bad_meta)
-        body, b = multipart(cid, b"not a pcapng file at all", meta)
+        body, b = multipart(cid, b"not a pcap file at all.....", meta)
         self.assertEqual(post(self.s.port, cid, body, b)[0], 422)
         self.assertEqual(self.s.datasets(), [])
         self.assertEqual(self.s.staging(), [])
 
     def test_missing_duplicate_unexpected_parts_400(self):
         cid = str(uuid.uuid4())
-        cap, meta = pcapng_bytes(10), sidecar(cid)
-        man = json.dumps({"protocol_version": 1, "capture_id": cid}).encode()
-        for parts in ([("manifest", None, man), ("capture", cid + ".pcapng", cap)],
-                      [("manifest", None, man), ("capture", cid + ".pcapng", cap), ("capture", cid + ".pcapng", cap)],
+        cap, meta = pcap_bytes(10), meta_bytes(cid)
+        man = json.dumps({"protocol_version": 2, "capture_id": cid}).encode()
+        for parts in ([("manifest", None, man), ("capture", cid + ".pcap", cap)],
+                      [("manifest", None, man), ("capture", cid + ".pcap", cap), ("capture", cid + ".pcap", cap)],
                       [("manifest", None, man), ("evil", None, b"x")],
-                      [("capture", cid + ".pcapng", cap), ("manifest", None, man)]):
+                      [("capture", cid + ".pcap", cap), ("manifest", None, man)]):
             body, b = multipart(cid, cap, meta, parts=parts)
             self.assertEqual(post(self.s.port, cid, body, b)[0], 400, [p[0] for p in parts])
         self.assertEqual(self.s.datasets(), [])
 
     def test_path_traversal_and_bad_ids(self):
         cid = str(uuid.uuid4())
-        cap, meta = pcapng_bytes(10), sidecar(cid)
-        body, b = multipart(cid, cap, meta, fnames={"capture": "../../etc/passwd", "metadata": cid + ".meta.json"})
+        cap, meta = pcap_bytes(10), meta_bytes(cid)
+        body, b = multipart(cid, cap, meta, fnames={"capture": "../../etc/passwd", "metadata": cid + ".meta"})
         self.assertEqual(post(self.s.port, cid, body, b)[0], 400)
         body, b = multipart("../x", cap, meta)
         self.assertEqual(post(self.s.port, "../x", body, b)[0], 400)
@@ -190,7 +199,7 @@ class ReceiverTests(unittest.TestCase):
 
     def test_unauthorized_upload(self):
         cid = str(uuid.uuid4())
-        body, b = multipart(cid, pcapng_bytes(10), sidecar(cid))
+        body, b = multipart(cid, pcap_bytes(10), meta_bytes(cid))
         self.assertEqual(post(self.s.port, cid, body, b, token=None)[0], 401)
         self.assertEqual(post(self.s.port, cid, body, b, token="wrong")[0], 401)
 
@@ -198,7 +207,7 @@ class ReceiverTests(unittest.TestCase):
         self.s.close()
         self.s = Server(max_bytes=2000)
         cid = str(uuid.uuid4())
-        body, b = multipart(cid, pcapng_bytes(5000), sidecar(cid))
+        body, b = multipart(cid, pcap_bytes(5000), meta_bytes(cid))
         try:
             st = post(self.s.port, cid, body, b)[0]
         except (BrokenPipeError, ConnectionResetError):
@@ -208,7 +217,7 @@ class ReceiverTests(unittest.TestCase):
 
     def test_interrupted_body_no_orphan_then_retry(self):
         cid = str(uuid.uuid4())
-        cap, meta = pcapng_bytes(200000), sidecar(cid)
+        cap, meta = pcap_bytes(200000), meta_bytes(cid)
         body, b = multipart(cid, cap, meta)
         raw = socket.create_connection(("127.0.0.1", self.s.port))
         tls = client_ctx().wrap_socket(raw, server_hostname="127.0.0.1")
@@ -230,7 +239,7 @@ class ReceiverTests(unittest.TestCase):
     def test_lost_response_then_replay(self):
         self.s.srv.drop_response_once.set()
         cid = str(uuid.uuid4())
-        cap, meta = pcapng_bytes(1000), sidecar(cid)
+        cap, meta = pcap_bytes(1000), meta_bytes(cid)
         body, b = multipart(cid, cap, meta)
         with self.assertRaises((http.client.RemoteDisconnected, ConnectionResetError, ssl.SSLError)):
             post(self.s.port, cid, body, b)
@@ -242,8 +251,8 @@ class ReceiverTests(unittest.TestCase):
     def test_streaming_large_bounded_memory(self):
         cid = str(uuid.uuid4())
         size = 48 * 1024 * 1024
-        cap = pcapng_bytes(size)
-        meta = sidecar(cid)
+        cap = pcap_bytes(size)
+        meta = meta_bytes(cid)
         body, b = multipart(cid, cap, meta)
         before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         st, rc = post(self.s.port, cid, body, b)

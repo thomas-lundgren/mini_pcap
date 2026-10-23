@@ -79,17 +79,14 @@ def main():
                 pass
     last = max(sess, key=lambda s: s["seq"])
     cid = last["capture_id"]
-    meta = bench.adb("run-as", PKG, "cat", "files/captures/%s.meta.json" % cid)
-    open(os.path.join(out, "sidecar.json"), "w").write(meta)
-    pc = os.path.join(out, "soak.pcapng")
-    with open(pc, "wb") as f:
-        f.write(subprocess.run(["adb", "exec-out", "run-as", PKG, "cat", "files/captures/%s.pcapng" % cid],
-                               capture_output=True).stdout)
-    v = subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(__file__), "..", "scripts", "pcapng_tool.py"),
-                        "validate", pc], capture_output=True, text=True).stdout
-    m = json.loads(meta)
+    mp = bench.pull(cid, "meta", os.path.join(out, "%s.meta" % cid))
+    pc = bench.pull(cid, "pcap", os.path.join(out, "%s.pcap" % cid))
+    v = subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(__file__), "..", "..", "analyzer", "mpcanalyze.py"),
+                        "validate", pc, mp], capture_output=True, text=True).stdout
+    m = bench.session_summary(mp)
+    json.dump(m, open(os.path.join(out, "sidecar.json"), "w"), indent=1)
     rss = [s["rss_kb"] for s in samples]
-    summary = {"minutes": a.minutes, "state": last["state"], "pcapng_valid": '"ok": true' in v,
+    summary = {"minutes": a.minutes, "state": last["state"], "pcap_meta_valid": '"ok": true' in v,
                "records": m["stats"]["packets_recorded"], "capture_queue_drops": m["stats"]["capture_queue_drops"],
                "file_bytes": m["stats"]["file_bytes"], "rss_kb_first": rss[0], "rss_kb_max": max(rss), "rss_kb_last": rss[-1],
                "rss_kb_last10_spread": max(rss[-10:]) - min(rss[-10:]),

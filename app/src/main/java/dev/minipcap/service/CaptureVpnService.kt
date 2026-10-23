@@ -17,18 +17,17 @@ import android.util.Log
 import dev.minipcap.BuildConfig
 import dev.minipcap.capture.CaptureConfig
 import dev.minipcap.capture.ClassRules
-import dev.minipcap.capture.ContextSampler
-import dev.minipcap.capture.ContextSummary
-import dev.minipcap.capture.ContextWriter
 import dev.minipcap.capture.CounterSnapshot
 import dev.minipcap.capture.FilterMode
 import dev.minipcap.capture.NativeCore
 import dev.minipcap.capture.PackageRegistry
-import dev.minipcap.capture.Sidecar
-import dev.minipcap.capture.SidecarData
+import dev.minipcap.capture.MeasurementConfig
 import dev.minipcap.capture.UidResolver
 import dev.minipcap.capture.Variant
+import dev.minipcap.meta.MetaFormat
+import dev.minipcap.meta.MetaSession
 import dev.minipcap.storage.CaptureFileProvider
+import dev.minipcap.storage.PcapRecovery
 import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.SessionState
 import dev.minipcap.storage.SessionStore
@@ -48,8 +47,7 @@ class ActiveCapture(val id: String, val config: CaptureConfig, val startedElapse
     @Volatile var counters: CounterSnapshot? = null
     @Volatile var resolver: UidResolver? = null
     @Volatile var registry: PackageRegistry? = null
-    @Volatile var contextWriter: ContextWriter? = null
-    @Volatile var sampler: ContextSampler? = null
+    @Volatile var meta: MetaSession? = null
     @Volatile var missingPackages: List<String> = emptyList()
     @Volatile var stopReason: String? = null
 }
@@ -64,7 +62,9 @@ class CaptureVpnService : VpnService() {
         const val EXTRA_STALL_MS = "stall_ms"
         const val ACTION_DEBUG_STALL = "dev.minipcap.action.DEBUG_STALL"
         private const val LOW_STORAGE_BYTES = 200L shl 20
-        private const val CHECKPOINT_MS = 10_000L
+        /** CAPTURE_STATS records in the metadata file. */
+        private const val STATS_MS = 10_000L
+        const val FORWARDER_NAME = "lwip-heiher-e6d5fc6+socket-relay"
         const val TUN_ADDR4 = "10.111.0.2"
         const val TUN_ADDR6 = "fd00:6d70:6300::2"
 
@@ -93,8 +93,8 @@ class CaptureVpnService : VpnService() {
     private lateinit var tickerThread: HandlerThread
     private lateinit var ticker: Handler
     private lateinit var store: SessionStore
-    private var lastCheckpoint = 0L
-    private val checkpointLock = Any()
+    private var lastStats = 0L
+    private val stateLock = Any()
 
     override fun onCreate() {
         super.onCreate()
@@ -137,9 +137,10 @@ class CaptureVpnService : VpnService() {
     /** Location access in the background needs the "location" FGS type (while-in-use permission). */
     private fun locationType(): Int {
         val cfg = CaptureConfig.load(this)
+        val m = MeasurementConfig.load(this)
         val granted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        return if (cfg.contextEnabled && cfg.variant == Variant.F && granted) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+        return if ((m.gps || m.radio) && cfg.variant == Variant.F && granted) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
     }
 
     private fun goForeground(n: android.app.Notification) {
@@ -186,34 +187,33 @@ class CaptureVpnService : VpnService() {
                 fd, path, cfg.snaplen, cfg.mtu, cfg.variant.nativeId, cfg.ringBytes,
                 "mini_pcap_collect ${BuildConfig.VERSION_NAME}",
                 "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-                "${Build.MANUFACTURER} ${Build.MODEL}",
-                if (cfg.variant.resolvesUids) cfg.uidHoldMs else 0)
+                "${Build.MANUFACTURER} ${Build.MODEL}")
             // Handles are tagged heap pointers (may be negative as jlong); errors are -errno.
             if (h in -4095L..0L) throw IllegalStateException("native capture start failed (errno ${-h})")
             a.handle = h
-            val ctxWriter = if (cfg.variant.writesFile) ContextWriter(h) else null
-            a.contextWriter = ctxWriter
+            val meta = if (cfg.variant.writesFile) startMeta(a, h) else null
             if (cfg.variant.resolvesUids) {
                 val reg = PackageRegistry(packageManager, ClassRules.parse(ClassRules.loadText(this))) { uid, info ->
-                    ctxWriter?.app(uid, info)
+                    meta?.uid(uid, info)
                 }
                 a.registry = reg
-                a.resolver = UidResolver(h, getSystemService(ConnectivityManager::class.java)) { reg.noteUid(it) }
-                    .also { it.start() }
+                a.resolver = UidResolver(h, getSystemService(ConnectivityManager::class.java), { reg.noteUid(it) }) { f ->
+                    meta?.flow(f)
+                }.also { it.start() }
             }
-            if (ctxWriter != null && cfg.contextEnabled && cfg.variant == Variant.F)
-                a.sampler = ContextSampler(this, ctxWriter, cfg.contextIntervalMs).also { it.start() }
             a.state = SessionState.RECORDING
             store.update(id) { it.copy(state = SessionState.RECORDING) }
-            lastCheckpoint = SystemClock.elapsedRealtime()
+            lastStats = SystemClock.elapsedRealtime()
             updateNotification(Notifications.recording(this, id, 0, if (cfg.variant.fullUi) 0 else null, 0))
             notifyListeners()
             ticker.post(tick)
         } catch (e: Exception) {
             Log.e(TAG, "capture start failed: ${e.message}")
             // Never leave a running native session (and an active VPN) behind on failure.
-            a.sampler?.stop()
-            a.contextWriter?.close()
+            a.meta?.let {
+                it.stopCollectors()
+                it.finish(MetaFormat.END_COMPLETE, "start_failed", emptyMap())
+            }
             a.resolver?.let { NativeCore.nativeStop(a.handle); it.join(1000) }
             if (a.handle != 0L) {
                 NativeCore.nativeStop(a.handle)
@@ -231,6 +231,35 @@ class CaptureVpnService : VpnService() {
             notifyListeners()
             stopSelf()
         }
+    }
+
+    /** Opens `<id>.meta.partial` with the native PCAP clock anchor and starts the collectors. */
+    private fun startMeta(a: ActiveCapture, h: Long): MetaSession {
+        val arr = LongArray(NativeCore.counterNames.size)
+        NativeCore.nativeCounters(h, arr)
+        val c = CounterSnapshot(arr)
+        val cfg = a.config
+        // Benchmark variants D/E keep only app/flow records; F runs every enabled collector.
+        val m = if (cfg.variant == Variant.F) MeasurementConfig.load(this)
+            else MeasurementConfig(gps = false, radio = false, motion = false)
+        val s = MetaSession(this, store.metaPartial(a.id), UUID.fromString(a.id), c["anchor_boottime_ns"], c["anchor_realtime_ns"], m)
+        a.meta = s
+        s.start(mapOf(
+            "app_version" to BuildConfig.VERSION_NAME,
+            "device_manufacturer" to Build.MANUFACTURER, "device_model" to Build.MODEL,
+            "android_release" to Build.VERSION.RELEASE, "api_level" to "${Build.VERSION.SDK_INT}",
+            "capture_point" to "android_vpn_tun", "forwarder" to FORWARDER_NAME,
+            "pcap_file" to store.pcapFinal(a.id).name, "ip_snaplen" to when (cfg.snaplen) {
+                CaptureConfig.HEADERS_ONLY -> "headers"
+                else -> "${cfg.snaplen}"
+            }, "min_capture" to "ip+transport header", "mtu" to "${cfg.mtu}",
+            "filter_mode" to cfg.filterMode.name.lowercase(),
+            "filter_packages" to if (cfg.filterMode == FilterMode.ALL) "" else cfg.selectedPackages.sorted().joinToString(","),
+            "missing_packages" to a.missingPackages.sorted().joinToString(","),
+            "benchmark_profile" to cfg.variant.profile,
+            "started_utc_ms" to "${a.startedUtcMs}",
+        ))
+        return s
     }
 
     private fun buildVpn(cfg: CaptureConfig, a: ActiveCapture): Builder {
@@ -312,9 +341,9 @@ class CaptureVpnService : VpnService() {
             if (a.config.variant.fullUi) {
                 updateNotification(Notifications.recording(this@CaptureVpnService, a.id, elapsed,
                     c["records_written"], c["file_bytes"]))
-                if (SystemClock.elapsedRealtime() - lastCheckpoint >= CHECKPOINT_MS) {
-                    lastCheckpoint = SystemClock.elapsedRealtime()
-                    checkpoint(a, c)
+                if (SystemClock.elapsedRealtime() - lastStats >= STATS_MS) {
+                    lastStats = SystemClock.elapsedRealtime()
+                    a.meta?.stats(c.toMap())
                 }
             }
             notifyListeners()
@@ -326,45 +355,10 @@ class CaptureVpnService : VpnService() {
         }
     }
 
-    private fun sidecarData(a: ActiveCapture, c: CounterSnapshot, status: String, endedMs: Long?): SidecarData {
-        val r = a.resolver
-        val uidStats = HashMap<String, Long>()
-        if (r != null) {
-            uidStats["uid_lookup_misses"] = r.misses
-            uidStats["uid_flows_resolved"] = r.resolved
-            uidStats["uid_lookup_calls"] = r.lookupCalls
-            uidStats["uid_requests_received"] = r.requests
-            uidStats.putAll(r.latencyPercentiles())
-        }
-        return SidecarData(
-            captureId = a.id, status = status, startedUtcMs = a.startedUtcMs, endedUtcMs = endedMs,
-            snaplen = a.config.snaplen, mtu = a.config.mtu, filterMode = a.config.filterMode,
-            filterPackages = a.config.selectedPackages.toList().takeIf { a.config.filterMode != FilterMode.ALL } ?: emptyList(),
-            missingPackages = a.missingPackages, variant = a.config.variant,
-            uidMap = a.registry?.snapshot() ?: emptyMap(),
-            context = ContextSummary(
-                enabled = a.sampler != null,
-                intervalMs = a.config.contextIntervalMs,
-                recordsQueued = a.contextWriter?.written ?: 0,
-                recordsRejected = a.contextWriter?.rejected ?: 0,
-                permissions = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.READ_PHONE_STATE).associate {
-                    it.substringAfterLast('.') to (checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED)
-                },
-                uidHoldMs = if (a.config.variant.resolvesUids) a.config.uidHoldMs else 0),
-            flowUidMap = r?.flowUidMap?.let { HashMap(it) } ?: emptyMap(),
-            counters = c.toMap(), uidStats = uidStats, stopReason = a.stopReason,
-            appVersion = BuildConfig.VERSION_NAME, deviceApiLevel = Build.VERSION.SDK_INT,
-            anchorBoottimeNs = c["anchor_boottime_ns"], anchorRealtimeNs = c["anchor_realtime_ns"])
-    }
-
-    /** Crash-recovery checkpoint of the sidecar (atomic replace, ~every 10 s). */
-    private fun checkpoint(a: ActiveCapture, c: CounterSnapshot) {
-        synchronized(checkpointLock) {
-            if (a.state != SessionState.RECORDING) return
-            runCatching { Sidecar.writeAtomic(store.metaCheckpoint(a.id), Sidecar.build(sidecarData(a, c, "recording", null))) }
-                .onFailure { Log.w(TAG, "checkpoint failed: ${it.javaClass.simpleName}") }
-        }
+    private fun uidStats(a: ActiveCapture): Map<String, Long> {
+        val r = a.resolver ?: return emptyMap()
+        return mapOf("uid_lookup_misses" to r.misses, "uid_flows_resolved" to r.resolved,
+            "uid_lookup_calls" to r.lookupCalls, "uid_requests_received" to r.requests) + r.latencyPercentiles()
     }
 
     // ------------------------------------------------------------------ stop
@@ -372,7 +366,7 @@ class CaptureVpnService : VpnService() {
     /** Ordered, idempotent Stop: RECORDING -> STOPPING -> finalize -> COMPLETE. */
     private fun stopCapture(reason: String) {
         val a = active ?: return
-        synchronized(checkpointLock) {
+        synchronized(stateLock) {
             if (a.state != SessionState.RECORDING) return // duplicate Stop / already stopping
             a.state = SessionState.STOPPING
         }
@@ -382,9 +376,9 @@ class CaptureVpnService : VpnService() {
         updateNotification(Notifications.stopping(this))
         notifyListeners()
         val t0 = SystemClock.elapsedRealtime()
-        // 1) quiesce tap, stop forwarding, close TUN; 2) drain + flush + fsync + close PCAPNG.
-        a.sampler?.stop() // last context records are queued before the writer drains
-        a.contextWriter?.close() // no native call can follow nativeDestroy
+        // 1) stop metadata collectors; 2) quiesce tap, stop forwarding, close TUN, drain +
+        // fsync + close PCAP; 3) UID worker records every remaining flow; 4) close the meta file.
+        a.meta?.stopCollectors()
         val rc = NativeCore.nativeStop(a.handle)
         a.resolver?.join(3000)
         a.registry?.shutdown()
@@ -396,14 +390,14 @@ class CaptureVpnService : VpnService() {
         try {
             val now = System.currentTimeMillis()
             if (rc != 0 && a.config.variant.writesFile)
-                dev.minipcap.storage.PcapngRecovery.truncateToValidPrefix(store.pcapPartial(a.id))
-            val data = sidecarData(a, c, "complete", now)
-            val json = Sidecar.build(data)
-            json.getJSONObject("stats").put("stop_finalize_ms", SystemClock.elapsedRealtime() - t0)
-            Sidecar.writeAtomic(store.metaFinal(a.id), json)
-            if (a.config.variant.writesFile && !store.pcapPartial(a.id).renameTo(store.pcapFinal(a.id)))
-                throw java.io.IOException("rename of capture file failed")
-            store.metaCheckpoint(a.id).delete()
+                PcapRecovery.truncateToValidPrefix(store.pcapPartial(a.id))
+            a.meta?.finish(MetaFormat.END_COMPLETE, reason, c.toMap() + uidStats(a) +
+                mapOf("stop_finalize_ms" to SystemClock.elapsedRealtime() - t0))
+            if (a.config.variant.writesFile) {
+                if (!store.pcapPartial(a.id).renameTo(store.pcapFinal(a.id)) ||
+                    !store.metaPartial(a.id).renameTo(store.metaFinal(a.id)))
+                    throw java.io.IOException("rename of capture files failed")
+            }
             store.markFinalized(a.id, SessionState.COMPLETE, now, reason)
             ExportJobService.schedule(this) // moves the pair to Downloads if enabled
             lastResult = "Saved ${a.id.take(8)} (${c["records_written"]} packets)"
@@ -412,6 +406,7 @@ class CaptureVpnService : VpnService() {
             finalState = SessionState.ERROR
             store.update(a.id) { it.copy(state = SessionState.ERROR, error = e.message) }
             lastResult = "Finalize failed: ${e.message}; partial files kept for recovery"
+            runCatching { a.meta?.writer?.close() }
         }
         a.state = finalState
         NativeCore.nativeDestroy(a.handle)

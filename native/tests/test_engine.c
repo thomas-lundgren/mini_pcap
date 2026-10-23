@@ -211,7 +211,7 @@ int main(void)
     CHECK_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sp), 0);
     tun_app = sp[1];
     mkdir("engine_out", 0755);
-    mpc_capture_config cfg = {.pcap_path = "engine_out/engine.pcapng",
+    mpc_capture_config cfg = {.pcap_path = "engine_out/engine.pcap",
                               .snaplen = 256,
                               .mtu = 1500,
                               .variant = MPC_VARIANT_E_UID,

@@ -2,7 +2,6 @@ package dev.minipcap
 
 import dev.minipcap.upload.UploadClient
 import dev.minipcap.upload.UploadException
-import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -67,18 +66,16 @@ class UploadIntegrationTest {
 
     private fun pair(id: String, pcapBytes: ByteArray): Pair<File, File> {
         val d = Files.createTempDirectory("pair").toFile()
-        val p = File(d, "$id.pcapng").apply { writeBytes(pcapBytes) }
-        val m = File(d, "$id.meta.json").apply {
-            writeText(JSONObject().put("schema_version", 1).put("capture_id", id).put("status", "complete")
-                .put("capture_file", "$id.pcapng").toString())
-        }
+        val p = File(d, "$id.pcap").apply { writeBytes(pcapBytes) }
+        val m = File(d, "$id.meta")
+        TestCapture.meta(m, id) // written by the app's own MetaWriter
         return p to m
     }
 
     @Test
     fun healthUploadReplayConflictAndAuth() {
         val base = "https://127.0.0.1:$port"
-        assertTrue(UploadClient(base, token).testConnection().contains("protocol v1"))
+        assertTrue(UploadClient(base, token).testConnection().contains("protocol v2"))
         try {
             UploadClient(base, "wrong").testConnection()
             fail()
@@ -87,7 +84,7 @@ class UploadIntegrationTest {
         }
 
         val id = UUID.randomUUID().toString()
-        val bytes = TestPcapng.file(20_000) // ~1.6 MB
+        val bytes = TestCapture.pcap(20_000) // ~3.4 MB
         val (p, m) = pair(id, bytes)
         val pd = UploadClient.sha256(p)
         val md = UploadClient.sha256(m)
@@ -98,8 +95,8 @@ class UploadIntegrationTest {
         assertTrue(progressed > bytes.size)
         // Server holds byte-identical artifacts under the capture ID.
         val stored = File(data, "store/captures/$id")
-        assertArrayEquals(bytes, File(stored, "$id.pcapng").readBytes())
-        assertArrayEquals(m.readBytes(), File(stored, "$id.meta.json").readBytes())
+        assertArrayEquals(bytes, File(stored, "$id.pcap").readBytes())
+        assertArrayEquals(m.readBytes(), File(stored, "$id.meta").readBytes())
 
         // Retry of the same capture: idempotent replay with the same receipt.
         val r2 = UploadClient(base, token).upload(id, p, m, pd, md, { _, _ -> }, { false })
@@ -107,18 +104,18 @@ class UploadIntegrationTest {
         assertEquals(r1.receiptId, r2.receiptId)
 
         // Same capture ID with different content: 409, never overwritten.
-        val (p2, m2) = pair(id, TestPcapng.file(3))
+        val (p2, m2) = pair(id, TestCapture.pcap(3))
         try {
             UploadClient(base, token).upload(id, p2, m2, UploadClient.sha256(p2), UploadClient.sha256(m2), { _, _ -> }, { false })
             fail()
         } catch (e: UploadException) {
             assertEquals(409, e.httpStatus)
         }
-        assertArrayEquals(bytes, File(stored, "$id.pcapng").readBytes())
+        assertArrayEquals(bytes, File(stored, "$id.pcap").readBytes())
 
         // Digest that does not match the content: 422 and no dataset.
         val id3 = UUID.randomUUID().toString()
-        val (p3, m3) = pair(id3, TestPcapng.file(5))
+        val (p3, m3) = pair(id3, TestCapture.pcap(5))
         val wrong = UploadClient.sha256(p3).copy(sha256 = "0".repeat(64))
         try {
             UploadClient(base, token).upload(id3, p3, m3, wrong, UploadClient.sha256(m3), { _, _ -> }, { false })

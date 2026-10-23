@@ -57,11 +57,19 @@
             <Spinner android:id="@+id/spSnaplen" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" />
         </LinearLayout>
 
-        <CheckBox
-            android:id="@+id/cbContext"
+        <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/record_context" />
+            android:layout_marginTop="8dp"
+            android:text="@string/measurements" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <CheckBox android:id="@+id/cbGps" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/m_gps" />
+            <CheckBox android:id="@+id/cbRadio" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/m_radio" />
+            <CheckBox android:id="@+id/cbMotion" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/m_motion" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/rowVariant"

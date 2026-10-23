@@ -25,7 +25,7 @@ Command: `./validation/scripts/check_native.sh`
 | Python independent parser | `pcapng_tool.py check-fixture`: every record's direction, lengths, flow ID, UID, µs timestamp; retrospective join of flow 1's first two packets via `flow_uid_map` | OK |
 | tshark cross-check | `frame.packet_flags_direction` (0x2 UL / 0x1 DL), `frame.len`/`cap_len`, `frame.comment`, `frame.time_epoch` ±1.5 µs for all 12 records; `capinfos` reads Raw IP, µs resolution, snaplen 64 | OK |
 
-## 2. JVM unit tests — PASS (26/26)
+## 2. JVM unit tests — PASS (29/29, 2026-10-23 after ADR-014)
 
 Command: `./gradlew testDebugUnitTest`
 
@@ -160,7 +160,20 @@ cached tail) — it reached capacity without any drop.
   ~110–180 Mbit/s TCP, throughput/RTT changes within run-to-run spread. Provisional P2 budgets still need sign-off.
 - No "minimal overhead" claim is made: independent review and P2 (energy, thermal, cellular, snaplen sweep) are open.
 
-## ADR-013 tags v2 + context records (2026-10-23)
+## ADR-014 PCAP (SLL) + binary metadata (2026-10-23)
+
+| Check | Result | Evidence |
+|---|---|---|
+| `test_pcap` | PASS | global header (ns magic, snaplen, linktype 113); record: ts s/ns, incl/orig incl. SLL, pkttype 4/0, ARPHRD 0xFFFE, protocol 0x0800/0x86DD/0 |
+| `test_capture` | PASS | 12-packet fixture as PCAP; UID requests carry exact first-packet times (flows 1–4); header floor: snaplen 32 and headers-only keep IPv4+TCP 40, IPv6+TCP(12 B options) 72, IPv6+UDP 48, ICMP 28/32, SYN 40; stall/drop accounting and 0 allocations on tap unchanged |
+| `check_native.sh` | PASS | independent reader: dir/lengths/ns timestamps for 12 records, monotonic time recovered exactly from PCAP time; tshark: `sll.pkttype` 4/0, `frame.len` = orig + 16; capinfos: Linux cooked-mode capture v1 |
+| `MetaWriterTest` (5) | PASS | framing/scan; truncated tail recovery + SESSION_END(recovered), idempotent; 4-buffer pool under 20k samples: accepted + dropped = offered, producer never blocks, DROPPED_EVENTS written, critical SESSION_END kept; oversize record dropped cleanly; **Python analyzer on Kotlin-written files**: app per packet incl. downlink and 5-tuple reuse (new generation → other app), unresolved flow reported, ICMP `not_tcp_udp`, interpolated position (59.0005), `latest` within gap, `stale` beyond, RSRP with 100 ms / 1000 ms age, stale flag at 16 s, serving cell change LTE 123 → NR 501, accel window mean 7.405, unknown record type skipped, context-at, summary |
+| `SessionStoreTest` (8) | PASS | PCAP tail truncation; force-stop recovery of `.pcap.partial` + `.meta.partial` (half record) → RECOVERED; interrupted finalize → COMPLETE; legacy state files keep `.pcapng`/`.meta.json` names |
+| `UploadIntegrationTest` | PASS | Kotlin client ↔ Python receiver, protocol v2, byte-identical `.pcap`/`.meta`, replay 200, 409, 422 |
+| receiver `test_receiver.py` | PASS 14/14 | v2; rejects meta of another session, recovered status, missing SESSION_END, truncated record, non-SLL/non-PCAP capture |
+| Device: collectors (GPS, cells, signal, NSA override, motion modes, Wi-Fi), permissions, FGS location type, overhead | **NOT TESTED** | phone not connected |
+
+## ADR-013 tags v2 + context records (2026-10-23, superseded by ADR-014, never released)
 
 | Check | Result | Evidence |
 |---|---|---|

@@ -40,6 +40,52 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp" />
+        <TextView style="@style/SectionTitle" android:text="@string/measurement_settings" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/motion_mode" />
+        <Spinner
+            android:id="@+id/motionMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/motion_hz" />
+        <EditText
+            android:id="@+id/motionHz"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="number"
+            android:importantForAutofill="no" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/motion_threshold" />
+        <EditText
+            android:id="@+id/motionThreshold"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="numberDecimal"
+            android:importantForAutofill="no" />
+        <CheckBox
+            android:id="@+id/gyro"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/m_gyro" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/gps_interval" />
+        <EditText
+            android:id="@+id/gpsInterval"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="number"
+            android:importantForAutofill="no" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/gps_distance" />
+        <EditText
+            android:id="@+id/gpsDistance"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="numberDecimal"
+            android:importantForAutofill="no" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/radio_refresh" />
+        <EditText
+            android:id="@+id/radioRefresh"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="number"
+            android:importantForAutofill="no" />
         <TextView style="@style/SectionTitle" android:text="@string/storage_title" />
         <CheckBox
             android:id="@+id/autoMove"

@@ -9,13 +9,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Optional context records (position, cell measurements, radio technology); requested
-         at Start only when "Record position, motion and radio" is on (ADR-013). -->
+    <!-- Optional measurements for the .meta file (position, cell measurements, radio technology);
+         requested at Start only for the collectors that are switched on (ADR-014). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Motion sampling above 200 Hz (normal permission, API 31+). -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <!-- User-initiated data transfer jobs for Upload latest (API 34+). -->
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
 

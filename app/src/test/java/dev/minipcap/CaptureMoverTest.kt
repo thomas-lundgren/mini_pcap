@@ -70,8 +70,8 @@ class CaptureMoverTest {
 
     private fun complete(id: String, packets: Int = 50, state: SessionState = SessionState.COMPLETE): Pair<ByteArray, ByteArray> {
         sessions.create(id, "F", 1)
-        val p = TestPcapng.file(packets)
-        val m = JSONObject().put("capture_id", id).put("status", "complete").put("capture_file", "$id.pcapng").toString().toByteArray()
+        val p = TestCapture.pcap(packets)
+        val m = JSONObject().put("capture_id", id).put("status", "complete").put("capture_file", "$id.pcap").toString().toByteArray()
         sessions.pcapFinal(id).writeBytes(p)
         sessions.metaFinal(id).writeBytes(m)
         sessions.markFinalized(id, state, 10, "user_stop")
@@ -87,13 +87,13 @@ class CaptureMoverTest {
         val r = mover.move(id) { done, total -> last = done; assertEquals((p.size + m.size).toLong(), total) }
         assertEquals(ExportStatus.EXPORTED, r.status)
         assertEquals((p.size + m.size).toLong(), last)
-        assertEquals(listOf("$id.meta.json", "$id.pcapng"), dest.visible())
+        assertEquals(listOf("$id.meta", "$id.pcap"), dest.visible())
         assertEquals(2, dest.syncs)
         assertFalse(sessions.pcapFinal(id).exists())
         assertFalse(sessions.metaFinal(id).exists())
         val pair = mover.pairFor(sessions.get(id)!!)!!
         assertTrue(pair.pcap is ExportFile)
-        assertEquals("$id.pcapng", pair.pcap.name)
+        assertEquals("$id.pcap", pair.pcap.name)
         assertArrayEquals(p, pair.pcap.open().readBytes())
         assertArrayEquals(m, pair.meta.open().readBytes())
         assertEquals(CaptureMover.digest(ByteArrayInputStream(p)), r.pcapSha256)
@@ -144,11 +144,11 @@ class CaptureMoverTest {
     fun onlyFinalizedPairsAreEligible() {
         sessions.create(id, "F", 1)
         sessions.update(id) { it.copy(state = SessionState.RECORDING) }
-        sessions.pcapPartial(id).writeBytes(TestPcapng.file(1))
+        sessions.pcapPartial(id).writeBytes(TestCapture.pcap(1))
         assertFalse(mover.eligible(sessions.get(id)!!))
         val unpaired = "00000000-0000-4000-8000-0000000000bb"
         sessions.create(unpaired, "F", 2)
-        sessions.pcapFinal(unpaired).writeBytes(TestPcapng.file(1))
+        sessions.pcapFinal(unpaired).writeBytes(TestCapture.pcap(1))
         sessions.markFinalized(unpaired, SessionState.COMPLETE, 3, null)
         assertFalse(mover.eligible(sessions.get(unpaired)!!))
         val rec = "00000000-0000-4000-8000-0000000000cc"
@@ -160,13 +160,13 @@ class CaptureMoverTest {
     fun reconcileRollsBackInterruptedMoveAndFinishesCommittedOne() {
         // Crash mid-copy: hidden entries recorded, private pair intact.
         complete(id)
-        val ref = dest.create("$id.pcapng", "application/octet-stream")
+        val ref = dest.create("$id.pcap", "application/octet-stream")
         exports.update(id) { ExportRecord(id, ExportStatus.EXPORTING, pcapRef = ref) }
         // Crash after commit, before deleting private copies.
         val b = "00000000-0000-4000-8000-0000000000bb"
         complete(b)
         mover.move(b)
-        sessions.pcapFinal(b).writeBytes(TestPcapng.file(1))
+        sessions.pcapFinal(b).writeBytes(TestCapture.pcap(1))
         sessions.metaFinal(b).writeText("{}")
         assertEquals(setOf(id, b), mover.reconcile().toSet())
         assertEquals(ExportStatus.QUEUED, exports.get(id).status)
@@ -179,9 +179,9 @@ class CaptureMoverTest {
     @Test
     fun staleHiddenEntriesFromAnUnrecordedCrashAreReplaced() {
         complete(id)
-        dest.create("$id.pcapng", "application/octet-stream") // ref never recorded
+        dest.create("$id.pcap", "application/octet-stream") // ref never recorded
         assertEquals(ExportStatus.EXPORTED, mover.move(id).status)
-        assertEquals(listOf("$id.meta.json", "$id.pcapng"), dest.visible())
+        assertEquals(listOf("$id.meta", "$id.pcap"), dest.visible())
         assertEquals(2, dest.entries.size)
     }
 
@@ -189,10 +189,10 @@ class CaptureMoverTest {
     fun sharedFilesDeletedOutsideTheAppAreReportedMissing() {
         complete(id)
         mover.move(id)
-        dest.entries.entries.removeIf { it.value.name.endsWith(".pcapng") }
+        dest.entries.entries.removeIf { it.value.name.endsWith(".pcap") }
         assertNull(mover.pairFor(sessions.get(id)!!))
         assertNull(sessions.latestCompleted(mover::pairFor))
-        assertTrue(mover.deleteExported(id).not()) // the pcapng is already gone
+        assertTrue(mover.deleteExported(id).not()) // the pcap is already gone
         sessions.delete(id)
         assertEquals(ExportStatus.NOT_EXPORTED, exports.get(id).status)
     }

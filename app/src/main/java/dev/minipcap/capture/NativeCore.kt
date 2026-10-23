@@ -4,7 +4,7 @@ import java.nio.ByteBuffer
 
 /**
  * JNI facade for the native data plane. Every call here is lifecycle or batched
- * control: start/stop, ~1 Hz counter snapshots and context records, batched UID exchange.
+ * control: start/stop, ~1 Hz counter snapshots and batched UID exchange.
  * No method is invoked per packet.
  */
 object NativeCore {
@@ -13,7 +13,7 @@ object NativeCore {
     }
 
     /** Sizes of the UID request/resolution records shared through direct buffers. */
-    const val UID_REQUEST_BYTES = 48
+    const val UID_REQUEST_BYTES = 56 // flow_id u64, key[40], first_seen_ns u64
     const val UID_RESOLUTION_BYTES = 56
 
     val counterNames: List<String> by lazy { nativeCounterNames().toList() }
@@ -33,7 +33,6 @@ object NativeCore {
         userAppl: String,
         os: String,
         hardware: String,
-        uidHoldMs: Int,
     ): Long
 
     /** Ordered stop: quiesce tap, stop forwarding/close TUN, drain+fsync writer. 0 = file complete. */
@@ -43,17 +42,10 @@ object NativeCore {
 
     @JvmStatic external fun nativeCounters(handle: Long, out: LongArray): Int
 
-    /** Blocks up to [timeoutMs]; returns number of 48-byte requests written, or -1 once closed. */
+    /** Blocks up to [timeoutMs]; returns number of 56-byte requests written, or -1 once closed. */
     @JvmStatic external fun nativeUidPoll(handle: Long, buf: ByteBuffer, max: Int, timeoutMs: Int): Int
 
     @JvmStatic external fun nativeUidDeliver(handle: Long, buf: ByteBuffer, count: Int): Int
-
-    /** Context record kinds (native MPC_CTX_*): STATE is referenced by packets as c=<seq>. */
-    const val CTX_STATE = 1
-    const val CTX_INFO = 2
-
-    /** ~1 Hz: queue one JSON context record for the ctx0 interface. 0 = queued. */
-    @JvmStatic external fun nativeContext(handle: Long, kind: Int, seq: Int, info: ByteArray?, json: ByteArray): Int
 
     /** Benchmark-only synthetic writer stall (PERFORMANCE_PLAN V32). */
     @JvmStatic external fun nativeWriterStall(handle: Long, ms: Int)

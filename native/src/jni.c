@@ -1,6 +1,6 @@
 /* JNI bridge. Called only at session start/stop, for ~1 Hz counter snapshots and
- * context records, and for batched UID request/resolution exchange through direct
- * ByteBuffers. Nothing here runs per packet. */
+ * for batched UID request/resolution exchange through direct ByteBuffers.
+ * Nothing here runs per packet. */
 #include <errno.h>
 #include <jni.h>
 #include <stdlib.h>
@@ -44,7 +44,7 @@ JNIEXPORT jobjectArray JNICALL Java_dev_minipcap_capture_NativeCore_nativeCounte
 
 JNIEXPORT jlong JNICALL Java_dev_minipcap_capture_NativeCore_nativeStart(
     JNIEnv *env, jclass cls, jint tun_fd, jstring pcap_path, jint snaplen, jint mtu, jint variant,
-    jint ring_bytes, jstring userappl, jstring os, jstring hardware, jint uid_hold_ms)
+    jint ring_bytes, jstring userappl, jstring os, jstring hardware)
 {
     handle_t *h = calloc(1, sizeof(*h));
     if (!h) {
@@ -66,7 +66,6 @@ JNIEXPORT jlong JNICALL Java_dev_minipcap_capture_NativeCore_nativeStart(
         .userappl = h->strs[1],
         .os = h->strs[2],
         .hardware = h->strs[3],
-        .uid_hold_ms = uid_hold_ms > 0 ? (uint32_t)uid_hold_ms : 0,
     };
     int err = 0;
     h->s = mpc_session_start(tun_fd, &cfg, &err);
@@ -139,30 +138,6 @@ JNIEXPORT jint JNICALL Java_dev_minipcap_capture_NativeCore_nativeUidDeliver(JNI
     if (!h || !p || (jlong)n * (jlong)sizeof(mpc_uid_resolution) > cap)
         return -1;
     return mpc_capture_uid_deliver(mpc_session_capture(h->s), p, n);
-}
-
-/* ~1 Hz: one context record (UTF-8 info text + JSON). Timestamped here, on the packet clock. */
-JNIEXPORT jint JNICALL Java_dev_minipcap_capture_NativeCore_nativeContext(JNIEnv *env, jclass cls,
-                                                                           jlong handle, jint kind,
-                                                                           jint seq, jbyteArray info,
-                                                                           jbyteArray json)
-{
-    handle_t *h = (handle_t *)(intptr_t)handle;
-    if (!h || !json)
-        return -1;
-    jsize il = info ? (*env)->GetArrayLength(env, info) : 0;
-    jsize jl = (*env)->GetArrayLength(env, json);
-    jbyte *ip = il ? (*env)->GetByteArrayElements(env, info, NULL) : NULL;
-    jbyte *jp = (*env)->GetByteArrayElements(env, json, NULL);
-    int rc = -1;
-    if (jp && (il == 0 || ip))
-        rc = mpc_capture_context(mpc_session_capture(h->s), kind, (uint32_t)seq, mpc_now_boottime_ns(),
-                                 (const char *)ip, (size_t)il, (const uint8_t *)jp, (size_t)jl);
-    if (ip)
-        (*env)->ReleaseByteArrayElements(env, info, ip, JNI_ABORT);
-    if (jp)
-        (*env)->ReleaseByteArrayElements(env, json, jp, JNI_ABORT);
-    return rc;
 }
 
 JNIEXPORT void JNICALL Java_dev_minipcap_capture_NativeCore_nativeWriterStall(JNIEnv *env, jclass cls,

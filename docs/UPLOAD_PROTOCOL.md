@@ -1,6 +1,6 @@
 # Upload Protocol — Version 1 (proposed client/receiver contract)
 
-**State:** v1 implemented (Android client + reference receiver) and tested — see `docs/TEST_RESULTS.md`  
+**State:** v2 implemented (Android client + reference receiver), host-tested — see `docs/TEST_RESULTS.md`. v2 differs from v1 only in the file pair: `<id>.pcap` (Linux SLL) + binary `<id>.meta` ([`META_FORMAT.md`](META_FORMAT.md)) instead of PCAPNG + JSON sidecar (ADR-014).  
 **Target:** Configurable HTTPS server for user-triggered upload of complete Android PCAPNG captures.  
 **MVP policy:** Upload only after logging has stopped and both artifacts are finalized. No automatic upload.
 
@@ -8,7 +8,7 @@
 
 | Operation | Request | Success | Purpose |
 |---|---|---|---|
-| Test connection | `GET /api/v1/health` | `200` with `{"status":"ok","protocol_version":1}` | Reachability, TLS and configured authorization test |
+| Test connection | `GET /api/v1/health` | `200` with `{"status":"ok","protocol_version":2}` | Reachability, TLS and configured authorization test |
 | Upload pair | `POST /api/v1/captures` | `201` with receipt; `200` on idempotent replay | Transfer a completed capture + metadata as one logical transaction |
 
 - Base URL configured in Android settings, e.g. `https://receiver.example.org`. Resolve endpoints relative to this URL (preserve any deployment prefix consistently).
@@ -21,8 +21,8 @@
 `Content-Type: multipart/form-data` (generated streaming boundary). Parts:
 
 1. `manifest`: JSON `application/json`, see below.
-2. `capture`: binary `application/octet-stream`, filename `<capture_id>.pcapng`.
-3. `metadata`: JSON `application/json`, filename `<capture_id>.meta.json`.
+2. `capture`: binary `application/octet-stream`, filename `<capture_id>.pcap` (classic PCAP, nanosecond, `LINKTYPE_LINUX_SLL`).
+3. `metadata`: binary `application/octet-stream`, filename `<capture_id>.meta` (META_FORMAT v1). The receiver checks the header magic, that the session ID equals `capture_id`, the record framing, and that the last record is `SESSION_END` with status complete.
 
 Headers: `Idempotency-Key: <capture_id>` (uniquely identifies logical upload for one receiver; same key for retries). Use a capture ID that includes sufficient randomness or is collision-resistant across devices, not a sequential time-only ID. `X-Protocol-Version: 1` is optional if manifest includes protocol version.
 
@@ -30,16 +30,16 @@ Example manifest:
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "capture_id": "7e3419b2-5b66-47c1-bb3c-e7d4ebc2cd47",
   "files": {
     "capture": {
-      "filename": "7e3419b2-5b66-47c1-bb3c-e7d4ebc2cd47.pcapng",
+      "filename": "7e3419b2-5b66-47c1-bb3c-e7d4ebc2cd47.pcap",
       "size_bytes": 123456,
       "sha256": "<64-lowercase-hex-digits>"
     },
     "metadata": {
-      "filename": "7e3419b2-5b66-47c1-bb3c-e7d4ebc2cd47.meta.json",
+      "filename": "7e3419b2-5b66-47c1-bb3c-e7d4ebc2cd47.meta",
       "size_bytes": 2048,
       "sha256": "<64-lowercase-hex-digits>"
     }
@@ -64,7 +64,7 @@ Example manifest:
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "capture_id": "7e3419b2-5b66-47c1-bb3c-e7d4ebc2cd47",
   "receipt_id": "srv-000001",
   "stored": true,
@@ -88,7 +88,7 @@ Client verifies the response capture ID and both returned digest values against 
 
 ## Minimum receiver tests
 
-- Valid paired payload => `201`, saved exact byte-for-byte PCAPNG + sidecar; receipt digests verified.
+- Valid paired payload => `201`, saved exact byte-for-byte PCAP + metadata file; receipt digests verified.
 - Identical retry => `200` same receipt, one logical dataset.
 - Same capture ID with different hashes => `409`, no overwrite.
 - Missing/mismatched metadata, bad hashes, tampered capture ID => `422/400`, no visible dataset.

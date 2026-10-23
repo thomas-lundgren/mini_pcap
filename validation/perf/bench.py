@@ -25,6 +25,29 @@ import sys
 import time
 
 PKG = "dev.minipcap"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "analyzer"))
+import mpcanalyze  # noqa: E402
+
+
+def pull(cid, ext, dest):
+    """Copies files/captures/<cid>.<ext> from the app's private storage to dest."""
+    data = subprocess.run(["adb", "exec-out", "run-as", PKG, "cat", "files/captures/%s.%s" % (cid, ext)],
+                          capture_output=True).stdout
+    with open(dest, "wb") as f:
+        f.write(data)
+    return dest
+
+
+def session_summary(meta_path):
+    """Final counters from the binary .meta (SESSION_END), shaped like the old JSON sidecar."""
+    m = mpcanalyze.read_meta(meta_path, strict=False)
+    end = next((r for r in m["records"] if r["type"] == "SESSION_END"), None)
+    c = end["counters"] if end else {}
+    stats = {"packets_recorded": c.get("records_written", 0),
+             "capture_queue_drops": c.get("capture_queue_drops_ul", 0) + c.get("capture_queue_drops_dl", 0),
+             "file_bytes": c.get("file_bytes", 0), "stop_finalize_ms": c.get("stop_finalize_ms"),
+             "meta_records": len(m["records"]), "meta_records_dropped": c.get("meta_records_dropped", 0)}
+    return {"native_counters": c, "stats": stats, "status": end["status"] if end else None}
 NETTOOL = "/data/local/tmp/nettool"
 CLK_TCK = 100
 
@@ -185,9 +208,9 @@ def stop_variant(v, outdir, run):
         if newest is None or s["seq"] > newest["seq"]:
             newest = s
     if newest:
-        meta = adb("run-as", PKG, "cat", "files/captures/%s.meta.json" % newest["capture_id"], check=False)
+        mp = pull(newest["capture_id"], "meta", os.path.join(outdir, "%s-run%d.meta" % (v, run)))
         with open(os.path.join(outdir, "%s-sidecar-run%d.json" % (v, run)), "w") as f:
-            f.write(meta)
+            json.dump(session_summary(mp) if os.path.getsize(mp) else {}, f, indent=1)
         # Delete benchmark artifacts from the phone (keeps storage bounded).
         adb("run-as %s sh -c 'rm -f files/captures/%s.*'" % (PKG, newest["capture_id"]), check=False)
 

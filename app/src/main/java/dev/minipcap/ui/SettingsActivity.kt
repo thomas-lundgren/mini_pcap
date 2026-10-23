@@ -2,13 +2,17 @@ package dev.minipcap.ui
 
 import android.app.Activity
 import android.os.Bundle
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import dev.minipcap.R
 import dev.minipcap.capture.ClassRules
+import dev.minipcap.capture.MeasurementConfig
+import dev.minipcap.capture.MotionMode
 import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.Exports
 import dev.minipcap.upload.UploadClient
@@ -30,6 +34,17 @@ class SettingsActivity : Activity() {
         wifi.isChecked = cfg.wifiOnly
         token.hint = getString(if (cfg.hasToken) R.string.token_stored else R.string.token_none)
         rules.setText(ClassRules.loadText(this))
+        val mc = MeasurementConfig.load(this)
+        val motionMode = findViewById<Spinner>(R.id.motionMode)
+        motionMode.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            listOf("Every sample", "Up to the sampling rate", "Only on change (threshold)"))
+        motionMode.setSelection(mc.motionMode.ordinal)
+        val motionHz = findViewById<EditText>(R.id.motionHz).apply { setText("${mc.motionHz}") }
+        val motionThreshold = findViewById<EditText>(R.id.motionThreshold).apply { setText("${mc.motionThreshold}") }
+        val gyro = findViewById<CheckBox>(R.id.gyro).apply { isChecked = mc.gyro }
+        val gpsInterval = findViewById<EditText>(R.id.gpsInterval).apply { setText("${mc.gpsMinTimeMs}") }
+        val gpsDistance = findViewById<EditText>(R.id.gpsDistance).apply { setText("${mc.gpsMinDistanceM}") }
+        val radioRefresh = findViewById<EditText>(R.id.radioRefresh).apply { setText("${mc.radioRefreshMs}") }
         val autoMove = findViewById<CheckBox>(R.id.autoMove)
         autoMove.isChecked = Exports.autoMove(this)
 
@@ -44,6 +59,15 @@ class SettingsActivity : Activity() {
                 token.hint = getString(R.string.token_stored)
             }
             ClassRules.saveText(this, rules.text.toString())
+            val cur = MeasurementConfig.load(this)
+            MeasurementConfig.save(this, cur.copy(
+                motionMode = MotionMode.entries[motionMode.selectedItemPosition],
+                motionHz = motionHz.text.toString().toIntOrNull()?.coerceIn(1, 1000) ?: cur.motionHz,
+                motionThreshold = motionThreshold.text.toString().toFloatOrNull()?.coerceAtLeast(0f) ?: cur.motionThreshold,
+                gyro = gyro.isChecked,
+                gpsMinTimeMs = gpsInterval.text.toString().toLongOrNull()?.coerceAtLeast(100) ?: cur.gpsMinTimeMs,
+                gpsMinDistanceM = gpsDistance.text.toString().toFloatOrNull()?.coerceAtLeast(0f) ?: cur.gpsMinDistanceM,
+                radioRefreshMs = radioRefresh.text.toString().toLongOrNull()?.coerceAtLeast(500) ?: cur.radioRefreshMs))
             if (autoMove.isChecked != Exports.autoMove(this)) {
                 Exports.setAutoMove(this, autoMove.isChecked)
                 if (autoMove.isChecked) ExportJobService.schedule(this)

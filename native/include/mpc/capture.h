@@ -47,11 +47,6 @@ enum {
     X(storage_errors)              \
     X(storage_dropped_records)     \
     X(writer_stall_ms)             \
-    X(ctx_records_written)         \
-    X(ctx_records_dropped)         \
-    X(records_uid_late_bound)      \
-    X(records_hold_bypassed)       \
-    X(uid_writer_drops)            \
     X(capture_ring_peak_slots)     \
     X(capture_ring_slots)          \
     X(capture_ring_slot_bytes)     \
@@ -91,9 +86,12 @@ extern const char *const mpc_counter_names[MPC_CNT__COUNT];
     atomic_store_explicit(&(c)->field,                                                     \
                           atomic_load_explicit(&(c)->field, memory_order_relaxed) + (v), \
                           memory_order_relaxed)
-/* For the few counters bumped by more than one thread (control plane, rare). */
-#define MPC_CINC_SHARED(c, field) atomic_fetch_add_explicit(&(c)->field, 1, memory_order_relaxed)
 #define MPC_CSET(c, field, v) atomic_store_explicit(&(c)->field, (v), memory_order_relaxed)
+
+#define MPC_SNAPLEN_HEADERS 0xFFFFFFFFu
+/* Largest header prefix guaranteed in a record: IPv4 60 + TCP 60, or IPv6 40 +
+ * extension headers + TCP 60. Longer header chains are cut at this length. */
+#define MPC_HDR_MAX 192u
 
 /* Record header stored at the start of every ring slot, followed by prefix bytes. */
 typedef struct {
@@ -107,27 +105,13 @@ typedef struct {
     uint32_t reserved;
 } mpc_rec_hdr;
 
-/* Context record kinds (Kotlin -> native, ~1 Hz). A STATE record (position, motion,
- * radio) becomes the "current context" referenced as c=<seq> by later packets; an
- * INFO record (e.g. first-seen app identity) is written but not referenced. */
-enum { MPC_CTX_STATE = 1, MPC_CTX_INFO = 2 };
-
-#define MPC_CTX_SLOT_BYTES (16u << 10)
-#define MPC_CTX_SLOTS 64u
-
-typedef struct {
-    uint64_t ts_ns; /* CLOCK_BOOTTIME when the snapshot was handed to native */
-    uint32_t seq;
-    uint32_t json_len;
-    uint16_t info_len;
-    uint8_t kind;
-    uint8_t reserved[5];
-} mpc_ctx_hdr;
-
-/* UID request (native -> Kotlin): 48 bytes, little endian. */
+/* UID request (native -> Kotlin): 56 bytes, little endian. first_seen_ns is the
+ * CLOCK_BOOTTIME timestamp of the flow's first packet (= its first PCAP record), so
+ * the analyzer can match a FLOW_MAPPING to packets by 5-tuple and time. */
 typedef struct {
     uint64_t flow_id;
     mpc_flow_key key;
+    uint64_t first_seen_ns;
 } mpc_uid_request;
 
 /* UID resolution (Kotlin -> native): 56 bytes, little endian. */
@@ -140,7 +124,9 @@ typedef struct {
 
 typedef struct {
     const char *pcap_path; /* NULL allowed for variants B/C */
-    uint32_t snaplen;      /* bytes of IP packet to keep; 0 = full packet (mtu) */
+    /* Bytes of IP packet to keep; 0 = full packet (mtu); MPC_SNAPLEN_HEADERS = headers only.
+     * Every record keeps at least the IP + transport header (up to MPC_HDR_MAX bytes). */
+    uint32_t snaplen;
     uint32_t mtu;
     int variant;
     size_t ring_bytes;
@@ -150,25 +136,15 @@ typedef struct {
     const char *userappl;
     const char *os;
     const char *hardware;
-    /* Writer holds records up to this long so a UID resolved shortly after a flow's
-     * first packets is written into them too (0 = write immediately, no late binding). */
-    uint32_t uid_hold_ms;
 } mpc_capture_config;
-
-/* Writer-side flow_id -> uid cache for late binding (direct mapped). */
-#define MPC_WUID_SLOTS 65536u
-typedef struct {
-    uint64_t flow_id;
-    int32_t uid;
-    uint32_t reserved;
-} mpc_wuid_entry;
 
 typedef struct mpc_capture {
     mpc_capture_config cfg;
     int tap_enabled;
     int uid_enabled;
     int write_file;
-    uint32_t snap; /* effective snaplen */
+    uint32_t snap;     /* configured IP prefix; 0 in headers-only mode */
+    uint32_t slot_cap; /* bytes a slot can hold: max(snap, MPC_HDR_MAX) */
 
     mpc_counters cnt;
     mpc_flow_table flows;
@@ -179,14 +155,6 @@ typedef struct mpc_capture {
     int uid_resp_efd; /* signalled by Kotlin delivery; watched by forwarder */
     int writer_efd;   /* wakes the writer early */
     int uid_req_pending_signal;
-
-    /* context records (control plane -> writer) and writer-side late UID binding */
-    mpc_ring ctx;
-    pthread_mutex_t ctx_lock;
-    int ctx_lock_init;
-    mpc_ring uid_wr;
-    mpc_wuid_entry *wuid;
-    uint32_t cur_ctx; /* writer thread only: seq of the last STATE record written, 0 = none */
 
     /* writer thread */
     pthread_t writer_thread;
@@ -234,10 +202,6 @@ int mpc_capture_uid_poll(mpc_capture *c, mpc_uid_request *out, int max, int time
 /* Single producer (one Kotlin worker thread). Returns number accepted. */
 int mpc_capture_uid_deliver(mpc_capture *c, const mpc_uid_resolution *res, int n);
 void mpc_capture_request_stall(mpc_capture *c, uint32_t ms);
-/* Any thread, ~1 Hz. Copies the record; returns 0, or -1 if disabled/too large/queue full
- * (counted as ctx_records_dropped). seq must increase for STATE records. */
-int mpc_capture_context(mpc_capture *c, int kind, uint32_t seq, uint64_t ts_ns, const char *info,
-                        size_t info_len, const uint8_t *json, size_t json_len);
 void mpc_capture_close_uid(mpc_capture *c);
 
 #endif

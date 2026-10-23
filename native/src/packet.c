@@ -4,11 +4,14 @@
 
 static inline uint16_t rd16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 
-static void parse_l4(const uint8_t *l4, size_t avail, mpc_pkt_info *info)
+static void parse_l4(const uint8_t *l4, size_t avail, mpc_pkt_info *info, size_t l4off)
 {
+    info->hdr_len = (uint16_t)l4off;
     if (info->proto == MPC_PROTO_TCP) {
         if (avail < 14)
             return;
+        size_t doff = (size_t)(l4[12] >> 4) * 4;
+        info->hdr_len = (uint16_t)(l4off + (doff >= 20 ? doff : 20));
         info->sport = rd16(l4);
         info->dport = rd16(l4 + 2);
         info->tcp_flags = l4[13];
@@ -19,6 +22,9 @@ static void parse_l4(const uint8_t *l4, size_t avail, mpc_pkt_info *info)
         info->sport = rd16(l4);
         info->dport = rd16(l4 + 2);
         info->has_ports = 1;
+        info->hdr_len = (uint16_t)(l4off + 8);
+    } else if (info->proto == MPC_PROTO_ICMP || info->proto == MPC_PROTO_ICMPV6) {
+        info->hdr_len = (uint16_t)(l4off + 8);
     }
 }
 
@@ -39,9 +45,10 @@ int mpc_parse_packet(const uint8_t *p, size_t len, mpc_pkt_info *info)
         memcpy(info->src, p + 12, 4);
         memcpy(info->dst, p + 16, 4);
         uint16_t frag = rd16(p + 6);
+        info->hdr_len = (uint16_t)ihl;
         if ((frag & 0x1fff) != 0)
             return 0; /* non-initial fragment: no transport header */
-        parse_l4(p + ihl, len - ihl, info);
+        parse_l4(p + ihl, len - ihl, info, ihl);
         return 0;
     }
     if (ver == 6) {
@@ -52,6 +59,7 @@ int mpc_parse_packet(const uint8_t *p, size_t len, mpc_pkt_info *info)
         memcpy(info->dst, p + 24, 16);
         uint8_t nh = p[6];
         size_t off = 40;
+        info->hdr_len = 40;
         /* Walk a bounded number of extension headers. */
         for (int i = 0; i < 8; i++) {
             if (nh == 0 || nh == 43 || nh == 60) { /* hop-by-hop, routing, dest opts */
@@ -62,6 +70,7 @@ int mpc_parse_packet(const uint8_t *p, size_t len, mpc_pkt_info *info)
                 size_t hlen = ((size_t)p[off + 1] + 1) * 8;
                 nh = p[off];
                 off += hlen;
+                info->hdr_len = (uint16_t)off;
                 continue;
             }
             if (nh == 44) { /* fragment */
@@ -72,6 +81,7 @@ int mpc_parse_packet(const uint8_t *p, size_t len, mpc_pkt_info *info)
                 uint16_t fo = rd16(p + off + 2);
                 info->proto = p[off];
                 off += 8;
+                info->hdr_len = (uint16_t)off;
                 if ((fo & 0xfff8) != 0)
                     return 0; /* non-initial fragment */
                 nh = info->proto;
@@ -81,7 +91,7 @@ int mpc_parse_packet(const uint8_t *p, size_t len, mpc_pkt_info *info)
         }
         info->proto = nh;
         if (off <= len)
-            parse_l4(p + off, len - off, info);
+            parse_l4(p + off, len - off, info, off);
         return 0;
     }
     return -1;

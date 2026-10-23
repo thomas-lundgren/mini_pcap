@@ -1,6 +1,6 @@
 package dev.minipcap.storage
 
-import dev.minipcap.capture.Sidecar
+import dev.minipcap.meta.MetaFormat
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -20,6 +20,8 @@ data class SessionRecord(
     val variant: String = "F",
     val stopReason: String? = null,
     val error: String? = null,
+    /** File format: [FORMAT_PCAP_META] (pcap + binary meta) or [FORMAT_LEGACY] (pcapng + JSON sidecar). */
+    val format: String = FORMAT_PCAP_META,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("capture_id", id).put("seq", seq).put("state", state.name).put("created_ms", createdMs)
@@ -28,8 +30,12 @@ data class SessionRecord(
         .put("variant", variant)
         .put("stop_reason", stopReason ?: JSONObject.NULL)
         .put("error", error ?: JSONObject.NULL)
+        .put("format", format)
 
     companion object {
+        const val FORMAT_PCAP_META = "pcap+meta-1"
+        const val FORMAT_LEGACY = "pcapng+json"
+
         fun fromJson(o: JSONObject) = SessionRecord(
             id = o.getString("capture_id"),
             seq = o.getLong("seq"),
@@ -40,6 +46,7 @@ data class SessionRecord(
             variant = o.optString("variant", "F"),
             stopReason = if (o.isNull("stop_reason")) null else o.optString("stop_reason"),
             error = if (o.isNull("error")) null else o.optString("error"),
+            format = o.optString("format", FORMAT_LEGACY), // records from before the format field
         )
     }
 }
@@ -57,10 +64,13 @@ class SessionStore(val dir: File) {
         dir.mkdirs()
     }
 
-    fun pcapPartial(id: String) = File(dir, "$id.pcapng.partial")
-    fun pcapFinal(id: String) = File(dir, "$id.pcapng")
-    fun metaCheckpoint(id: String) = File(dir, "$id.meta.partial.json")
-    fun metaFinal(id: String) = File(dir, "$id.meta.json")
+    private val formats = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private fun format(id: String) = formats[id] ?: (get(id)?.format ?: SessionRecord.FORMAT_PCAP_META).also { formats[id] = it }
+
+    fun pcapPartial(id: String) = File(dir, "$id.pcap.partial")
+    fun metaPartial(id: String) = File(dir, "$id.meta.partial")
+    fun pcapFinal(id: String) = File(dir, pcapName(id, format(id)))
+    fun metaFinal(id: String) = File(dir, metaName(id, format(id)))
     private fun stateFile(id: String) = File(dir, "$id.state.json")
 
     @Synchronized
@@ -119,8 +129,9 @@ class SessionStore(val dir: File) {
 
     @Synchronized
     fun delete(id: String) {
-        listOf(pcapPartial(id), pcapFinal(id), metaCheckpoint(id), metaFinal(id), stateFile(id),
+        listOf(pcapPartial(id), metaPartial(id), pcapFinal(id), metaFinal(id), stateFile(id),
             File(dir, "$id.upload.json"), File(dir, "$id.export.json")).forEach { it.delete() }
+        formats.remove(id)
     }
 
     /**
@@ -129,68 +140,45 @@ class SessionStore(val dir: File) {
      * COMPLETE unless finalization had already produced both final artifacts.
      */
     @Synchronized
-    fun recoverInterrupted(activeId: String?, nowMs: Long): List<SessionRecord> {
+    fun recoverInterrupted(activeId: String?, nowMs: Long, nowBootNs: Long = System.nanoTime()): List<SessionRecord> {
         val out = ArrayList<SessionRecord>()
         for (r in list()) {
-            // Active sessions were interrupted; ERROR sessions may still hold a .partial capture.
-            val interrupted = r.state.isActive || (r.state == SessionState.ERROR && pcapPartial(r.id).exists())
+            // Active sessions were interrupted; ERROR sessions may still hold .partial files.
+            val interrupted = r.state.isActive ||
+                (r.state == SessionState.ERROR && (pcapPartial(r.id).exists() || metaPartial(r.id).exists()))
             if (!interrupted || r.id == activeId) continue
-            out += recoverOne(r, nowMs)
+            out += if (r.format == SessionRecord.FORMAT_PCAP_META) recoverOne(r, nowMs, nowBootNs)
+                else markFinalized(r.id, SessionState.FAILED, nowMs, "legacy_session_interrupted")!!
         }
         return out
     }
 
-    private fun recoverOne(r: SessionRecord, nowMs: Long): SessionRecord {
-        val partial = pcapPartial(r.id)
-        val final = pcapFinal(r.id)
-        var scan: PcapngRecovery.Result? = null
-        if (partial.exists()) {
-            scan = PcapngRecovery.truncateToValidPrefix(partial)
-            if (scan.validBytes == 0L) {
-                partial.delete()
-            } else if (!partial.renameTo(final)) {
+    private fun recoverOne(r: SessionRecord, nowMs: Long, nowBootNs: Long): SessionRecord {
+        val pcap = pcapFinal(r.id)
+        val meta = metaFinal(r.id)
+        for ((partial, final) in listOf(pcapPartial(r.id) to pcap, metaPartial(r.id) to meta))
+            if (partial.exists() && !partial.renameTo(final))
                 return markFinalized(r.id, SessionState.FAILED, nowMs, "recovery_rename_failed")!!
-            }
-        } else if (final.exists()) {
-            scan = PcapngRecovery.truncateToValidPrefix(final)
-        }
-        // Finalization had fully written the sidecar: only the state commit was lost.
-        val existing = metaFinal(r.id).takeIf { it.exists() }?.let { runCatching { JSONObject(it.readText()) }.getOrNull() }
-        if (existing != null && existing.optString("status") == "complete" && final.exists() && r.state == SessionState.STOPPING) {
-            metaCheckpoint(r.id).delete()
-            return markFinalized(r.id, SessionState.COMPLETE, nowMs, existing.optString("stop_reason", "recovered_after_finalize"))!!
-        }
-        if (scan == null || !final.exists()) {
-            metaCheckpoint(r.id).delete()
+        if (!pcap.exists() || PcapRecovery.truncateToValidPrefix(pcap).validBytes == 0L) {
+            pcap.delete()
+            meta.delete()
             return markFinalized(r.id, SessionState.FAILED, nowMs, "process_terminated_no_capture_file")!!
         }
-        val base = metaCheckpoint(r.id).takeIf { it.exists() }?.let { runCatching { JSONObject(it.readText()) }.getOrNull() }
-            ?: JSONObject()
-                .put("schema_version", Sidecar.SCHEMA_VERSION)
-                .put("capture_id", r.id)
-                .put("capture_point", "android_vpn_tun")
-                .put("timestamp_unit", "microseconds_since_unix_epoch")
-                .put("started_utc", Sidecar.iso(r.createdMs))
-                .put("uid_map", JSONObject())
-                .put("flow_uid_map", JSONObject())
-                .put("stats", JSONObject())
-        base.put("capture_file", "${r.id}.pcapng")
-        base.put("status", "recovered")
-        base.put("stop_reason", "process_terminated_recovered_on_next_launch")
-        base.put("ended_utc", JSONObject.NULL)
-        base.put("recovery", JSONObject()
-            .put("recovered_utc", Sidecar.iso(nowMs))
-            .put("valid_bytes", scan.validBytes)
-            .put("truncated_bytes", scan.truncatedBytes)
-            .put("records_in_file", scan.packets)
-            .put("sidecar_source", if (metaCheckpoint(r.id).exists()) "last_checkpoint" else "minimal")
-            .put("note", "uid_map/flow_uid_map/stats reflect the last checkpoint, not the end of capture"))
-        writeAtomic(metaFinal(r.id), base.toString(2))
-        metaCheckpoint(r.id).delete()
+        if (!meta.exists())
+            return markFinalized(r.id, SessionState.FAILED, nowMs, "process_terminated_no_metadata_file")!!
+        val scan = MetaFormat.recover(meta, nowBootNs, "process_terminated_recovered")
+        if (!scan.headerOk)
+            return markFinalized(r.id, SessionState.FAILED, nowMs, "process_terminated_metadata_unreadable")!!
+        // Finalization had fully written both files: only the state commit was lost.
+        if (scan.endStatus == MetaFormat.END_COMPLETE && r.state == SessionState.STOPPING)
+            return markFinalized(r.id, SessionState.COMPLETE, nowMs, "recovered_after_finalize")!!
         return markFinalized(r.id, SessionState.RECOVERED, nowMs, "process_terminated_recovered")!!
     }
 
     companion object {
+        fun pcapName(id: String, format: String) = if (format == SessionRecord.FORMAT_LEGACY) "$id.pcapng" else "$id.pcap"
+        fun metaName(id: String, format: String) = if (format == SessionRecord.FORMAT_LEGACY) "$id.meta.json" else "$id.meta"
+
         fun writeAtomic(target: File, text: String) {
             val tmp = File(target.parentFile, target.name + ".tmp")
             FileOutputStream(tmp).use { out ->
@@ -205,11 +193,9 @@ class SessionStore(val dir: File) {
     }
 }
 
-/** Walks PCAPNG blocks and truncates a crash-interrupted file to its last complete block. */
-object PcapngRecovery {
+/** Cuts a crash-interrupted classic PCAP file back to its last complete record. */
+object PcapRecovery {
     data class Result(val validBytes: Long, val truncatedBytes: Long, val packets: Long)
-
-    fun scan(f: File): Result = RandomAccessFile(f, "r").use { scan(it) }
 
     fun truncateToValidPrefix(f: File): Result = RandomAccessFile(f, "rw").use { raf ->
         val r = scan(raf)
@@ -220,30 +206,25 @@ object PcapngRecovery {
         r
     }
 
-    private fun le32(b: ByteArray, o: Int): Long =
-        ((b[o].toLong() and 0xff) or ((b[o + 1].toLong() and 0xff) shl 8) or
-            ((b[o + 2].toLong() and 0xff) shl 16) or ((b[o + 3].toLong() and 0xff) shl 24))
+    fun scan(f: File): Result = RandomAccessFile(f, "r").use { scan(it) }
 
     private fun scan(raf: RandomAccessFile): Result {
         val size = raf.length()
-        var off = 0L
+        if (size < 24) return Result(0, size, 0)
+        val hdr = ByteArray(16)
+        raf.seek(0)
+        raf.readFully(hdr, 0, 4)
+        val magic = java.nio.ByteBuffer.wrap(hdr, 0, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+        if (magic != 0xA1B23C4D.toInt() && magic != 0xA1B2C3D4.toInt()) return Result(0, size, 0)
+        var off = 24L
         var packets = 0L
-        val hdr = ByteArray(12)
-        val tail = ByteArray(4)
-        var first = true
-        while (off + 12 <= size) {
+        while (off + 16 <= size) {
             raf.seek(off)
             raf.readFully(hdr)
-            val type = le32(hdr, 0)
-            val len = le32(hdr, 4)
-            if (first && (type != 0x0A0D0D0AL || le32(hdr, 8) != 0x1A2B3C4DL)) break
-            if (len < 12 || len % 4 != 0L || off + len > size) break
-            raf.seek(off + len - 4)
-            raf.readFully(tail)
-            if (le32(tail, 0) != len) break
-            if (type == 6L) packets++
-            off += len
-            first = false
+            val incl = java.nio.ByteBuffer.wrap(hdr, 8, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xffffffffL
+            if (off + 16 + incl > size) break
+            off += 16 + incl
+            packets++
         }
         return Result(off, size - off, packets)
     }

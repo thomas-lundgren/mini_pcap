@@ -28,6 +28,8 @@ import dev.minipcap.BuildConfig
 import dev.minipcap.R
 import dev.minipcap.capture.CaptureConfig
 import dev.minipcap.capture.FilterMode
+import dev.minipcap.capture.MeasurementConfig
+import dev.minipcap.capture.MotionMode
 import dev.minipcap.capture.Variant
 import dev.minipcap.service.CaptureVpnService
 import dev.minipcap.service.Notifications
@@ -54,7 +56,9 @@ class MainActivity : Activity() {
     private lateinit var btnPickApps: Button
     private lateinit var spSnaplen: Spinner
     private lateinit var spVariant: Spinner
-    private lateinit var cbContext: CheckBox
+    private lateinit var cbGps: CheckBox
+    private lateinit var cbRadio: CheckBox
+    private lateinit var cbMotion: CheckBox
     private lateinit var tvLatest: TextView
     private lateinit var tvUploadStatus: TextView
     private lateinit var btnUpload: Button
@@ -79,7 +83,9 @@ class MainActivity : Activity() {
         btnPickApps = findViewById(R.id.btnPickApps)
         spSnaplen = findViewById(R.id.spSnaplen)
         spVariant = findViewById(R.id.spVariant)
-        cbContext = findViewById(R.id.cbContext)
+        cbGps = findViewById(R.id.cbGps)
+        cbRadio = findViewById(R.id.cbRadio)
+        cbMotion = findViewById(R.id.cbMotion)
         tvLatest = findViewById(R.id.tvLatest)
         tvUploadStatus = findViewById(R.id.tvUploadStatus)
         btnUpload = findViewById(R.id.btnUpload)
@@ -87,7 +93,13 @@ class MainActivity : Activity() {
         listSessions = findViewById(R.id.listSessions)
 
         spSnaplen.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
-            CaptureConfig.SNAPLENS.map { if (it == 0) "Full packet" else "$it bytes" })
+            CaptureConfig.SNAPLENS.map {
+                when (it) {
+                    0 -> "Full packet"
+                    CaptureConfig.HEADERS_ONLY -> "Headers only (IP + TCP/UDP)"
+                    else -> "$it bytes (always incl. headers)"
+                }
+            })
         spVariant.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, Variant.entries.map { it.label })
         // Benchmark variants are a development tool only.
         findViewById<View>(R.id.rowVariant).visibility = if (BuildConfig.DEBUG) View.VISIBLE else View.GONE
@@ -101,7 +113,7 @@ class MainActivity : Activity() {
             refresh()
         }
         rgFilter.setOnCheckedChangeListener { _, _ -> saveConfig() }
-        cbContext.setOnCheckedChangeListener { _, _ -> saveConfig() }
+        for (cb in listOf(cbGps, cbRadio, cbMotion)) cb.setOnCheckedChangeListener { _, _ -> saveConfig() }
         val sel = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) = saveConfig()
             override fun onNothingSelected(p: AdapterView<*>?) {}
@@ -133,7 +145,8 @@ class MainActivity : Activity() {
      * Debug builds only: automation hook for validation/perf scripts, e.g.
      *   am start -n dev.minipcap/.ui.MainActivity --es cmd start --es variant E --ei snaplen 256
      * Commands: start, stop, stall (--ei ms), upload, server (--es url, --es token),
-     * move (latest finalized pair), automove (--ez on).
+     * move (latest finalized pair), automove (--ez on). start also takes --ez gps/radio/motion,
+     * --ei motion_hz, --es motion_mode ALL|MAX_RATE|THRESHOLD.
      * Release builds ignore these extras entirely.
      */
     private fun handleDebugCommand(i: Intent?) {
@@ -147,7 +160,13 @@ class MainActivity : Activity() {
                 if (i.hasExtra("snaplen")) c = c.copy(snaplen = i.getIntExtra("snaplen", 256))
                 i.getStringExtra("mode")?.let { m -> c = c.copy(filterMode = FilterMode.valueOf(m)) }
                 i.getStringExtra("pkgs")?.let { p -> c = c.copy(selectedPackages = p.split(',').filter { it.isNotBlank() }.toSet()) }
-                if (i.hasExtra("context")) c = c.copy(contextEnabled = i.getBooleanExtra("context", true))
+                var m = MeasurementConfig.load(this)
+                if (i.hasExtra("gps")) m = m.copy(gps = i.getBooleanExtra("gps", true))
+                if (i.hasExtra("radio")) m = m.copy(radio = i.getBooleanExtra("radio", true))
+                if (i.hasExtra("motion")) m = m.copy(motion = i.getBooleanExtra("motion", true))
+                if (i.hasExtra("motion_hz")) m = m.copy(motionHz = i.getIntExtra("motion_hz", 50))
+                i.getStringExtra("motion_mode")?.let { mm -> m = m.copy(motionMode = MotionMode.valueOf(mm)) }
+                MeasurementConfig.save(this, m)
                 CaptureConfig.save(this, c)
                 loadConfig()
                 onStartStop(automated = true)
@@ -195,7 +214,10 @@ class MainActivity : Activity() {
         })
         spSnaplen.setSelection(CaptureConfig.SNAPLENS.indexOf(c.snaplen).coerceAtLeast(0))
         spVariant.setSelection(c.variant.ordinal)
-        cbContext.isChecked = c.contextEnabled
+        val m = MeasurementConfig.load(this)
+        cbGps.isChecked = m.gps
+        cbRadio.isChecked = m.radio
+        cbMotion.isChecked = m.motion
         btnPickApps.text = getString(R.string.select_apps, c.selectedPackages.size)
         loadingConfig = false
     }
@@ -210,7 +232,9 @@ class MainActivity : Activity() {
         }
         val variant = if (BuildConfig.DEBUG) Variant.entries[spVariant.selectedItemPosition] else Variant.F
         CaptureConfig.save(this, old.copy(filterMode = mode, snaplen = CaptureConfig.SNAPLENS[spSnaplen.selectedItemPosition],
-            variant = variant, contextEnabled = cbContext.isChecked))
+            variant = variant))
+        MeasurementConfig.save(this, MeasurementConfig.load(this).copy(gps = cbGps.isChecked, radio = cbRadio.isChecked,
+            motion = cbMotion.isChecked))
         btnPickApps.isEnabled = mode != FilterMode.ALL
     }
 
@@ -228,8 +252,11 @@ class MainActivity : Activity() {
         // Context recording: ask for the runtime permissions once per Start; capture starts
         // either way and records "permission_denied" for whatever was refused.
         // Automation (debug) never shows dialogs: grant with `adb shell pm grant` beforehand.
-        if (c.contextEnabled && !automated) {
-            val missing = CONTEXT_PERMISSIONS.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        val m = MeasurementConfig.load(this)
+        if (!automated) {
+            val wanted = (if (m.gps) LOCATION_PERMISSIONS else emptyList()) +
+                (if (m.radio) LOCATION_PERMISSIONS + Manifest.permission.READ_PHONE_STATE else emptyList())
+            val missing = wanted.distinct().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (missing.isNotEmpty()) {
                 requestPermissions(missing.toTypedArray(), REQ_CONTEXT)
                 return
@@ -288,7 +315,7 @@ class MainActivity : Activity() {
         }
         btnStartStop.text = getString(if (recording) R.string.stop_logging else R.string.start_logging)
         btnStartStop.isEnabled = a == null || a.state == SessionState.RECORDING
-        for (v in listOf(rgFilter, spSnaplen, spVariant, cbContext)) v.isEnabled = !recording
+        for (v in listOf(rgFilter, spSnaplen, spVariant, cbGps, cbRadio, cbMotion)) v.isEnabled = !recording
         for (i in 0 until rgFilter.childCount) rgFilter.getChildAt(i).isEnabled = !recording
         btnPickApps.isEnabled = !recording && rgFilter.checkedRadioButtonId != R.id.rbAll
 
@@ -337,7 +364,7 @@ class MainActivity : Activity() {
             val u = uploads.get(r.id).status
             val e = exports.get(r.id)
             val size = if (e.status == ExportStatus.EXPORTED) e.pcapSize
-                else CaptureFileProvider.capturesDir(this).resolve("${r.id}.pcapng").takeIf { it.exists() }?.length()
+                else UploadJobService.stores(this).first.pcapFinal(r.id).takeIf { it.exists() }?.length()
             val where = when {
                 moving?.id == r.id -> "  moving ${moving.done * 100 / maxOf(moving.total, 1)}%"
                 e.status == ExportStatus.EXPORTED -> "  in ${e.location}"
@@ -416,7 +443,7 @@ class MainActivity : Activity() {
         private const val REQ_VPN = 1
         private const val REQ_NOTIF = 2
         private const val REQ_CONTEXT = 3
-        private val CONTEXT_PERMISSIONS = listOf(Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.READ_PHONE_STATE)
+        private val LOCATION_PERMISSIONS = listOf(Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 }

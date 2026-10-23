@@ -4,34 +4,39 @@ import android.net.ConnectivityManager
 import android.os.Process
 import android.os.SystemClock
 import android.system.OsConstants
+import dev.minipcap.meta.MetaFormat
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.PriorityQueue
-import java.util.concurrent.ConcurrentHashMap
 
-/** Result of the asynchronous owner-UID lookup for one flow generation. */
-data class FlowResolution(val uid: Int?, val resolution: String, val attempts: Int, val latencyMs: Long)
+/**
+ * Final result of the owner-UID lookup for one flow generation (FLOW_MAPPING record).
+ * [key] is the native 40-byte flow key; [firstSeenNs] the capture time of its first packet.
+ */
+class FlowResult(
+    val flowId: Long, val firstSeenNs: Long, val key: ByteArray, val uid: Int?,
+    val resolution: Int, val attempts: Int, val latencyMs: Long,
+)
 
 /**
  * Off-packet-path UID worker. Receives batched new-flow requests from native code,
  * calls [ConnectivityManager.getConnectionOwnerUid] (allowed for the active VPN app),
  * retries INVALID_UID with bounded backoff and returns batched resolutions to the
- * native flow cache. Also records the sidecar `flow_uid_map`.
+ * native flow cache. Every flow ends in exactly one [onFlow] call, resolved or not.
  */
 class UidResolver(
     private val handle: Long,
     private val cm: ConnectivityManager,
     private val onUid: (Int) -> Unit,
+    private val onFlow: (FlowResult) -> Unit = {},
 ) : Thread("uid-resolver") {
 
-    private class Pending(val key: ByteArray, val flowId: Long, val firstSeen: Long) {
+    private class Pending(val key: ByteArray, val flowId: Long, val firstSeenNs: Long) {
         var attempts = 0
         var due = 0L
     }
-
-    val flowUidMap = ConcurrentHashMap<Long, FlowResolution>()
 
     @Volatile var requests = 0L; private set
     @Volatile var resolved = 0L; private set
@@ -57,14 +62,14 @@ class UidResolver(
                 val key = ByteArray(40)
                 for (j in 0 until 40) key[j] = reqBuf.get(base + 8 + j)
                 requests++
-                attempt(Pending(key, reqBuf.getLong(base), SystemClock.elapsedRealtime()))
+                attempt(Pending(key, reqBuf.getLong(base), reqBuf.getLong(base + 48)))
             }
             val t = SystemClock.elapsedRealtime()
             while (retries.isNotEmpty() && retries.peek()!!.due <= t) attempt(retries.poll()!!)
             flush()
         }
         // Session closed: flows still pending retry are recorded as unresolved.
-        for (p in retries) record(p, null, "unresolved_session_ended")
+        for (p in retries) record(p, null, MetaFormat.RES_UNRESOLVED_SESSION_ENDED)
         retries.clear()
     }
 
@@ -72,7 +77,7 @@ class UidResolver(
         p.attempts++
         val uid = lookup(p.key)
         if (uid != Process.INVALID_UID) {
-            record(p, uid, if (p.attempts == 1) "resolved_after_first_packet" else "resolved_after_retry")
+            record(p, uid, if (p.attempts == 1) MetaFormat.RES_FIRST_LOOKUP else MetaFormat.RES_AFTER_RETRY)
             queueResolution(p, uid)
             onUid(uid)
             return
@@ -81,14 +86,15 @@ class UidResolver(
             p.due = SystemClock.elapsedRealtime() + RETRY_DELAYS_MS[p.attempts - 1]
             retries.add(p)
         } else {
-            record(p, null, "unresolved_invalid_uid")
+            record(p, null, MetaFormat.RES_UNRESOLVED_INVALID_UID)
             queueResolution(p, -1)
         }
     }
 
-    private fun record(p: Pending, uid: Int?, how: String) {
-        val latency = SystemClock.elapsedRealtime() - p.firstSeen
-        flowUidMap[p.flowId] = FlowResolution(uid, how, p.attempts, latency)
+    private fun record(p: Pending, uid: Int?, how: Int) {
+        // firstSeenNs is CLOCK_BOOTTIME from the native tap = elapsedRealtimeNanos.
+        val latency = (SystemClock.elapsedRealtimeNanos() - p.firstSeenNs) / 1_000_000
+        runCatching { onFlow(FlowResult(p.flowId, p.firstSeenNs, p.key, uid, how, p.attempts, latency)) }
         if (uid != null) {
             resolved++
             synchronized(latencies) { if (latencies.size < 100_000) latencies.add(latency) }

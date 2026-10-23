@@ -22,6 +22,10 @@ typedef struct {
     uint8_t has_ports; /* 1 when TCP/UDP ports were read (not a non-initial fragment) */
     uint8_t tcp_flags;
     uint16_t sport, dport; /* host byte order */
+    /* Bytes up to and including the transport header (IP + extension headers + TCP
+     * header incl. options / UDP / ICMP 8 bytes); the IP header length when the
+     * transport header is absent or unknown. May exceed the bytes available. */
+    uint16_t hdr_len;
     uint8_t src[16], dst[16]; /* IPv4 uses the first 4 bytes, rest zero */
 } mpc_pkt_info;
 

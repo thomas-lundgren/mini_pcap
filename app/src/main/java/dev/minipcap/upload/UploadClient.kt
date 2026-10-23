@@ -22,7 +22,7 @@ class UploadCancelled : Exception("canceled")
 data class FileDigest(val name: String, val size: Long, val sha256: String)
 data class UploadReceipt(val receiptId: String, val httpStatus: Int, val replay: Boolean)
 
-/** Protocol v1 client (docs/UPLOAD_PROTOCOL.md). Pure java.net; no Android dependencies. */
+/** Upload protocol client (docs/UPLOAD_PROTOCOL.md). Pure java.net; no Android dependencies. */
 class UploadClient(private val baseUrl: String, private val token: String?) {
 
     private fun endpoint(path: String): URL {
@@ -37,7 +37,7 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
         c.readTimeout = 60_000
         c.instanceFollowRedirects = false
         if (!token.isNullOrEmpty()) c.setRequestProperty("Authorization", "Bearer $token")
-        c.setRequestProperty("X-Protocol-Version", "1")
+        c.setRequestProperty("X-Protocol-Version", "$PROTOCOL_VERSION")
         return c
     }
 
@@ -50,9 +50,9 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
             if (code != 200) throw httpError(code, body)
             val o = runCatching { JSONObject(body) }.getOrNull()
                 ?: throw UploadException("Server reply is not protocol JSON", false, code)
-            if (o.optString("status") != "ok" || o.optInt("protocol_version") != 1)
-                throw UploadException("Server does not speak upload protocol v1", false, code)
-            "Connected: protocol v1, authorized"
+            if (o.optString("status") != "ok" || o.optInt("protocol_version") != PROTOCOL_VERSION)
+                throw UploadException("Server does not speak upload protocol v$PROTOCOL_VERSION", false, code)
+            "Connected: protocol v$PROTOCOL_VERSION, authorized"
         } finally {
             c.disconnect()
         }
@@ -84,7 +84,7 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
         val parts = listOf(
             Part("manifest", null, "application/json", manifest, null),
             Part("capture", pcapDigest.name, "application/octet-stream", null, pcap),
-            Part("metadata", metaDigest.name, "application/json", null, meta),
+            Part("metadata", metaDigest.name, "application/octet-stream", null, meta),
         )
         val total = multipartLength(boundary, parts)
         val c = open(endpoint("/api/v1/captures"))
@@ -113,6 +113,9 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
     }
 
     companion object {
+        /** v2: `<id>.pcap` (Linux SLL) + binary `<id>.meta` (docs/UPLOAD_PROTOCOL.md). */
+        const val PROTOCOL_VERSION = 2
+
         fun sha256(f: File): FileDigest = sha256(PrivateFile(f))
 
         fun sha256(f: CaptureFile): FileDigest {
@@ -131,7 +134,7 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
         }
 
         fun manifest(id: String, p: FileDigest, m: FileDigest): JSONObject = JSONObject()
-            .put("protocol_version", 1)
+            .put("protocol_version", PROTOCOL_VERSION)
             .put("capture_id", id)
             .put("files", JSONObject()
                 .put("capture", JSONObject().put("filename", p.name).put("size_bytes", p.size).put("sha256", p.sha256))
@@ -184,7 +187,7 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
             val o = runCatching { JSONObject(body) }.getOrNull()
                 ?: throw UploadException("Receipt is not valid JSON", true, code)
             val sha = o.optJSONObject("sha256")
-            if (o.optInt("protocol_version") != 1 || o.optString("capture_id") != id || !o.optBoolean("stored") ||
+            if (o.optInt("protocol_version") != PROTOCOL_VERSION || o.optString("capture_id") != id || !o.optBoolean("stored") ||
                 sha == null || sha.optString("capture") != p.sha256 || sha.optString("metadata") != m.sha256)
                 throw UploadException("Receipt does not match local capture/hashes", false, code)
             val rid = o.optString("receipt_id")

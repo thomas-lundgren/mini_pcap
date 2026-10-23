@@ -17,9 +17,10 @@ import dev.minipcap.service.Notifications
 import dev.minipcap.storage.CaptureFileProvider
 import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.Exports
+import dev.minipcap.meta.MetaFormat
+import dev.minipcap.storage.SessionRecord
 import dev.minipcap.storage.SessionState
 import dev.minipcap.storage.SessionStore
-import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
@@ -48,6 +49,7 @@ class UploadJobService : JobService() {
             val (sessions, uploads) = stores(ctx)
             val rec = sessions.get(captureId) ?: return "Unknown capture"
             if (rec.state != SessionState.COMPLETE) return "Capture is not complete"
+            if (rec.format != SessionRecord.FORMAT_PCAP_META) return "Older capture format cannot be uploaded (copy it over USB or share it)"
             if (Exports.isLocked(captureId)) return "Capture is being moved to Downloads — try again when done"
             val pair = Exports.mover(ctx).pairFor(rec) ?: return "Capture or sidecar file is missing (finalized pair not found)"
             uploads.get(captureId).takeIf { it.status == UploadStatus.SUCCEEDED }?.let {
@@ -136,11 +138,11 @@ class UploadJobService : JobService() {
             val rec = sessions.get(id) ?: throw UploadException("Capture no longer exists", false)
             if (rec.state != SessionState.COMPLETE) throw UploadException("Capture is not complete", false)
             val pair = Exports.mover(this).pairFor(rec) ?: throw UploadException("Capture or sidecar file is missing", false)
-            val meta = runCatching { JSONObject(pair.meta.open().reader(Charsets.UTF_8).use { it.readText() }) }.getOrNull()
-                ?: throw UploadException("Sidecar is not valid JSON", false)
-            if (meta.optString("capture_id") != id || meta.optString("status") != "complete" ||
-                meta.optString("capture_file") != pair.pcap.name)
-                throw UploadException("Sidecar does not match the capture file", false)
+            if (rec.format != SessionRecord.FORMAT_PCAP_META)
+                throw UploadException("Older capture format (PCAPNG + JSON) cannot be uploaded; copy it over USB or share it", false)
+            val scan = pair.meta.open().buffered(1 shl 16).use { MetaFormat.scan(it, pair.meta.length()) }
+            if (scan.sessionId?.toString() != id || scan.endStatus != MetaFormat.END_COMPLETE || scan.truncatedBytes != 0L)
+                throw UploadException("Metadata file does not match this capture or is incomplete", false)
             val cfg = UploadSettings(this)
             val server = cfg.load()
             UploadSettings.validateUrl(server.baseUrl)?.let { throw UploadException(it, false) }

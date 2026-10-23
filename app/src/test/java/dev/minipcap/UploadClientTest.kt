@@ -31,8 +31,8 @@ class UploadClientTest {
     @Test
     fun multipartLengthIsExactAndProgressReachesTotal() {
         val dir = Files.createTempDirectory("mp").toFile()
-        val pcap = dir.resolve("a.pcapng").apply { writeBytes(TestPcapng.file(100)) }
-        val meta = dir.resolve("a.meta.json").apply { writeText("{\"x\":1}") }
+        val pcap = dir.resolve("a.pcap").apply { writeBytes(TestCapture.pcap(100)) }
+        val meta = dir.resolve("a.meta").apply { writeText("{\"x\":1}") }
         val parts = listOf(
             UploadClient.Part("manifest", null, "application/json", "{}".toByteArray(), null),
             UploadClient.Part("capture", pcap.name, "application/octet-stream", null, dev.minipcap.storage.PrivateFile(pcap)),
@@ -51,7 +51,7 @@ class UploadClientTest {
     @Test
     fun cancellationStopsStreaming() {
         val dir = Files.createTempDirectory("mp").toFile()
-        val big = dir.resolve("b.pcapng").apply { writeBytes(ByteArray(2_000_000)) }
+        val big = dir.resolve("b.pcap").apply { writeBytes(ByteArray(2_000_000)) }
         val parts = listOf(UploadClient.Part("capture", big.name, "application/octet-stream", null, dev.minipcap.storage.PrivateFile(big)))
         var n = 0
         try {
@@ -66,7 +66,7 @@ class UploadClientTest {
         val p = FileDigest("x.pcapng", 10, "a".repeat(64))
         val m = FileDigest("x.meta.json", 5, "b".repeat(64))
         fun receipt(id: String = "id1", cap: String = p.sha256, meta: String = m.sha256, stored: Boolean = true) =
-            JSONObject().put("protocol_version", 1).put("capture_id", id).put("receipt_id", "srv-1").put("stored", stored)
+            JSONObject().put("protocol_version", UploadClient.PROTOCOL_VERSION).put("capture_id", id).put("receipt_id", "srv-1").put("stored", stored)
                 .put("sha256", JSONObject().put("capture", cap).put("metadata", meta)).toString()
         assertEquals("srv-1", UploadClient.verifyReceipt(receipt(), "id1", p, m, 201).receiptId)
         assertTrue(UploadClient.verifyReceipt(receipt(), "id1", p, m, 200).replay)
@@ -105,7 +105,7 @@ class UploadClientTest {
     @Test
     fun manifestShape() {
         val o = UploadClient.manifest("id", FileDigest("id.pcapng", 3, "a".repeat(64)), FileDigest("id.meta.json", 4, "b".repeat(64)))
-        assertEquals(1, o.getInt("protocol_version"))
+        assertEquals(2, o.getInt("protocol_version"))
         assertEquals("id.pcapng", o.getJSONObject("files").getJSONObject("capture").getString("filename"))
         assertEquals(4, o.getJSONObject("files").getJSONObject("metadata").getLong("size_bytes"))
     }

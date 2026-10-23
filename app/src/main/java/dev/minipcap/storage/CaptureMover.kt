@@ -140,9 +140,11 @@ class CaptureMover(
             return CapturePair(r.id, PrivateFile(sessions.pcapFinal(r.id)), PrivateFile(sessions.metaFinal(r.id)),
                 r.finalizedMs ?: 0, r.finalizeSeq ?: 0)
         }
-        val p = e.pcapRef?.takeIf { dest.nameOf(it) == pcapName(r.id) } ?: return null
-        val m = e.metaRef?.takeIf { dest.nameOf(it) == metaName(r.id) } ?: return null
-        return CapturePair(r.id, ExportFile(dest, p, pcapName(r.id), e.pcapSize), ExportFile(dest, m, metaName(r.id), e.metaSize),
+        val pn = sessions.pcapFinal(r.id).name
+        val mn = sessions.metaFinal(r.id).name
+        val p = e.pcapRef?.takeIf { dest.nameOf(it) == pn } ?: return null
+        val m = e.metaRef?.takeIf { dest.nameOf(it) == mn } ?: return null
+        return CapturePair(r.id, ExportFile(dest, p, pn, e.pcapSize), ExportFile(dest, m, mn, e.metaSize),
             r.finalizedMs ?: 0, r.finalizeSeq ?: 0)
     }
 
@@ -165,11 +167,12 @@ class CaptureMover(
                 done += n
                 onProgress(done, total)
             }
-            val pRef = dest.create(pcapName(id), "application/octet-stream")
+            // octet-stream keeps the file extension (a pcap MIME type would make MediaStore rename it).
+            val pRef = dest.create(pcap.name, "application/octet-stream")
             exports.update(id) { it.copy(pcapRef = pRef) }
-            val mRef = dest.create(metaName(id), "application/json")
+            val mRef = dest.create(meta.name, if (meta.name.endsWith(".json")) "application/json" else "application/octet-stream")
             exports.update(id) { it.copy(metaRef = mRef) }
-            for ((ref, want) in listOf(pRef to pcapName(id), mRef to metaName(id)))
+            for ((ref, want) in listOf(pRef to pcap.name, mRef to meta.name))
                 if (dest.nameOf(ref) != want) throw MoveException("Name conflict in ${dest.location} (got ${dest.nameOf(ref)})")
             val pSha = copy(pcap, pRef, progress)
             val mSha = copy(meta, mRef, progress)
@@ -260,7 +263,8 @@ class CaptureMover(
 
     /** Leftover hidden entries from a move that crashed before its refs were recorded. */
     private fun removeStale(id: String) {
-        for (n in listOf(pcapName(id), metaName(id))) dest.findOwn(n).forEach { runCatching { dest.delete(it) } }
+        for (n in listOf(sessions.pcapFinal(id).name, sessions.metaFinal(id).name))
+            dest.findOwn(n).forEach { runCatching { dest.delete(it) } }
     }
 
     private fun deletePrivate(id: String) {
@@ -274,8 +278,6 @@ class CaptureMover(
     companion object {
         /** Extra free space kept when moving, so the copy itself cannot fill the device. */
         const val SPACE_MARGIN = 64L shl 20
-        fun pcapName(id: String) = "$id.pcapng"
-        fun metaName(id: String) = "$id.meta.json"
 
         fun digest(inp: InputStream): String = inp.use {
             val md = MessageDigest.getInstance("SHA-256")

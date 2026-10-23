@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Reference receiver for upload protocol v1 (docs/UPLOAD_PROTOCOL.md). Stdlib only.
+"""Reference receiver for upload protocol v2 (docs/UPLOAD_PROTOCOL.md). Stdlib only.
 
     python3 receiver.py --port 8443 --cert certs/server.pem --key certs/server.key \
         --data data --token-file token.txt [--max-bytes N]
 
-GET  /api/v1/health    -> 200 {"status":"ok","protocol_version":1}
+GET  /api/v1/health    -> 200 {"status":"ok","protocol_version":2}
 POST /api/v1/captures  -> 201 receipt (new) | 200 receipt (identical replay) | 4xx/5xx error
 
 Transaction: the multipart body is streamed with bounded memory into a private
-staging directory while SHA-256 is computed; only after manifest, digests, sizes
-and sidecar identity validate is the staging directory renamed (atomically) into
+staging directory while SHA-256 is computed; only after manifest, digests, sizes,
+the PCAP header and the binary metadata (session id, record framing, final
+SESSION_END "complete"; docs/META_FORMAT.md) validate is the staging directory renamed (atomically) into
 the visible dataset directory, and only then is the receipt returned.
 Test-only fault injection: --drop-response-once (commit, then close without a reply).
 """
@@ -21,16 +22,18 @@ import os
 import re
 import shutil
 import ssl
+import struct
+import uuid
 import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_SMALL_PART = 64 * 1024        # manifest
-MAX_METADATA = 32 * 1024 * 1024   # sidecar JSON
+MAX_METADATA = 1024 * 1024 * 1024  # binary metadata (motion at high rates can be large)
 CHUNK = 64 * 1024
 
 
@@ -249,8 +252,8 @@ class Handler(BaseHTTPRequestHandler):
         manifest = None
         hashes, sizes = {}, {}
         seen = set()
-        files = {"capture": os.path.join(staging, "capture.pcapng"),
-                 "metadata": os.path.join(staging, "metadata.json")}
+        files = {"capture": os.path.join(staging, "capture.pcap"),
+                 "metadata": os.path.join(staging, "metadata.meta")}
         for headers, chunks in iter_parts(body, boundary):
             name, fname = disposition(headers)
             if name in seen:
@@ -269,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
             elif name in files:
                 if manifest is None:
                     raise HttpError(400, "manifest must precede file parts")
-                expected = "%s.pcapng" % cid if name == "capture" else "%s.meta.json" % cid
+                expected = "%s.pcap" % cid if name == "capture" else "%s.meta" % cid
                 if fname != expected:  # never used as a path; must equal the canonical name
                     raise HttpError(400, "unexpected filename for %s" % name)
                 limit = MAX_METADATA if name == "metadata" else self.server.max_bytes
@@ -303,8 +306,8 @@ class Handler(BaseHTTPRequestHandler):
                        "receipt_id": self.server.store.next_receipt(), "stored": True,
                        "sha256": {"capture": hashes["capture"], "metadata": hashes["metadata"]},
                        "size_bytes": {"capture": sizes["capture"], "metadata": sizes["metadata"]}}
-            os.rename(files["capture"], os.path.join(staging, "%s.pcapng" % cid))
-            os.rename(files["metadata"], os.path.join(staging, "%s.meta.json" % cid))
+            os.rename(files["capture"], os.path.join(staging, "%s.pcap" % cid))
+            os.rename(files["metadata"], os.path.join(staging, "%s.meta" % cid))
             with open(os.path.join(staging, "receipt.json"), "w") as f:
                 json.dump(receipt, f)
                 f.flush()
@@ -316,11 +319,11 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def validate(cid, manifest, hashes, sizes, files):
         if not isinstance(manifest, dict) or manifest.get("protocol_version") != PROTOCOL_VERSION:
-            raise HttpError(422, "manifest protocol_version must be 1")
+            raise HttpError(422, "manifest protocol_version must be %d" % PROTOCOL_VERSION)
         if manifest.get("capture_id") != cid:
             raise HttpError(422, "manifest capture_id does not match Idempotency-Key")
         mf = manifest.get("files") or {}
-        for part, fname in (("capture", "%s.pcapng" % cid), ("metadata", "%s.meta.json" % cid)):
+        for part, fname in (("capture", "%s.pcap" % cid), ("metadata", "%s.meta" % cid)):
             e = mf.get(part) or {}
             if e.get("filename") != fname:
                 raise HttpError(422, "manifest filename mismatch for %s" % part)
@@ -330,19 +333,39 @@ class Handler(BaseHTTPRequestHandler):
                 raise HttpError(422, "size mismatch for %s" % part)
             if e["sha256"] != hashes[part]:
                 raise HttpError(422, "sha256 mismatch for %s" % part)
-        try:
-            with open(files["metadata"]) as f:
-                meta = json.load(f)
-        except ValueError:
-            raise HttpError(422, "metadata is not JSON")
-        if meta.get("capture_id") != cid or meta.get("capture_file") != "%s.pcapng" % cid:
-            raise HttpError(422, "metadata capture identity mismatch")
-        if meta.get("status") != "complete":
-            raise HttpError(422, "metadata status must be complete")
+        check_meta(files["metadata"], cid)
         with open(files["capture"], "rb") as f:
-            head = f.read(12)
-        if len(head) < 12 or head[:4] != b"\x0a\x0d\x0d\x0a" or head[8:12] not in (b"\x4d\x3c\x2b\x1a", b"\x1a\x2b\x3c\x4d"):
-            raise HttpError(422, "capture is not a PCAPNG section")
+            head = f.read(24)
+        if len(head) < 24 or head[:4] not in (b"\x4d\x3c\xb2\xa1", b"\xd4\xc3\xb2\xa1"):
+            raise HttpError(422, "capture is not a little-endian PCAP file")
+        if struct.unpack_from("<I", head, 20)[0] != 113:
+            raise HttpError(422, "capture link type is not LINKTYPE_LINUX_SLL (113)")
+
+
+def check_meta(path, cid):
+    """Binary metadata (docs/META_FORMAT.md): header, session id, framing, final SESSION_END complete."""
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        hdr = f.read(64)
+        if len(hdr) < 64 or hdr[:8] != b"MPCMETA\0" or struct.unpack_from("<H", hdr, 8)[0] != 1:
+            raise HttpError(422, "metadata is not a MiniPcap meta file (v1)")
+        if str(uuid.UUID(bytes=hdr[16:32])) != cid:
+            raise HttpError(422, "metadata session id does not match capture_id")
+        off = struct.unpack_from("<I", hdr, 12)[0]
+        f.seek(off)
+        last_type, last_status = None, None
+        while off < size:
+            rh = f.read(16)
+            if len(rh) < 16:
+                raise HttpError(422, "metadata ends inside a record header")
+            rtype, _, length = struct.unpack_from("<HHI", rh)
+            if length < 16 or length % 8 or off + length > size:
+                raise HttpError(422, "metadata record framing is invalid at offset %d" % off)
+            body = f.read(length - 16)
+            last_type, last_status = rtype, (body[0] if rtype == 0x0003 and body else None)
+            off += length
+        if last_type != 0x0003 or last_status != 1:
+            raise HttpError(422, "metadata must end with SESSION_END status complete")
 
 
 def make_server(host, port, cert, key, data, token, max_bytes):

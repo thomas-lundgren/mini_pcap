@@ -17,7 +17,7 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
 | M5 Notification + Stop | DONE except tap test | systemExempted FGS, 1 Hz text, session-scoped Stop intent, idempotent stop (V09, V17), force-stop recovery (V11). Gap: physical tap on notification action, permission-denied, VPN revoke |
 | M6 Upload | DONE | receiver + 14 tests; Kotlin↔Python cross test; device upload SHA-256 identical, replay 200, 409, 401 preflight, refused while recording |
 | USB offload (ADR-012) | DONE (1 device) | finalized pairs moved to `Download/MiniPcap` with read-back SHA-256 check; force-stop mid-move recovered; upload from moved files. Gap: UI delete, MTP, API 29–32 |
-| ADR-013 tags v2 + context | IMPLEMENTED, host-tested | u=/f=/c= tags, ctx0 JSON records (position, motion, cells, technology, Wi-Fi, app identity), late UID binding. **Not yet on device; no benchmark** |
+| ADR-014 PCAP (SLL) + binary `.meta` + analyzer | IMPLEMENTED, host-tested (phases 1–4) | direction in SLL, header floor (≥ IP + transport header), asynchronous collectors (GPS, motion, radio, network, apps), `mpcanalyze.py`. **Phase 5 (device + performance): NOT TESTED** |
 | M7 / P2 | PARTIAL | 60-min soak PASS (23.6M records, 0 drops, bounded memory); no energy, thermal-stress, snaplen sweep, cellular, second API level, security review |
 
 ## Verified accomplishments (this session)
@@ -50,9 +50,10 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
       second Android version (API 29–33 path for upload jobs).
 - [ ] Perfetto/simpleperf profile of `mpc-engine` before any forwarding optimization.
 - [ ] Coordinator sign-off on provisional P2 budgets using TEST_RESULTS §5.
-- [ ] ADR-013 on device: run with context on (Wi-Fi and cellular, walking), check every section's values
-      and ages, permission-denied paths, FGS location type on Android 17; rerun P1 E/F + 60-min soak
-      (ring peak with 500 ms hold, file growth, battery).
+- [ ] ADR-014 on device (phase 5): Wi-Fi + cellular walk with GPS/radio/motion on; check SLL direction
+      in Wireshark, every record type in `mpcanalyze.py dump`, cell refresh rates, NSA override,
+      permission-denied paths, FGS location type on Android 17; motion modes and rates; rerun P1 + soak
+      (writer cost, `.meta` growth and drops at 50/200 Hz motion, battery).
 - [ ] Downloads move: UI delete on device, MTP browse from a desktop, API 29–32 device, capture drops while a large move runs.
 - [ ] CI (GitHub Actions or similar) running native tests, JVM tests and receiver tests.
 

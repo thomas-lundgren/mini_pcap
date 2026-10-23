@@ -92,7 +92,7 @@ Format: Date · State · Problem · Options · Evidence · Decision · Consequen
 - Evidence: `CaptureMoverTest` (8 tests with an in-memory destination); device tests in TEST_RESULTS §4.
 
 ## ADR-013: Self-describing packets: tags v2, context records, late UID binding
-- Date: 2026-10-23 · State: **accepted (device validation pending)** · supersedes the v1 comment grammar
+- Date: 2026-10-23 · State: **superseded by ADR-014** (never released) · superseded the v1 comment grammar
 - Context: the user's intent is per-packet metadata beyond app identity: positioning, motion and radio
   measurements (signal strength, serving and neighbor cells, radio technology), with packets
   separable by app without an external join.
@@ -131,6 +131,61 @@ Format: Date · State · Problem · Options · Evidence · Decision · Consequen
   contexts: c= assignment and ordering; late binding 2/5 records bound with a 300 ms hold, none after
   the hold), `check_native.sh` (independent reader + tshark decode contexts as JSON). Device and
   performance validation: **NOT TESTED** (phone not connected).
+
+## ADR-014: PCAP with Linux SLL direction + asynchronous binary metadata sidecar
+- Date: 2026-10-23 · State: **accepted (device validation pending)** · supersedes ADR-013 and the
+  PCAPNG/JSON output of ADR-002/ADR-003/ADR-011; specification from the user ("Packet Capture and
+  Asynchronous Metadata Architecture")
+- Decision:
+  1. **Packets:** `<id>.pcap`, classic PCAP, nanosecond magic `0xA1B23C4D`, `LINKTYPE_LINUX_SLL`
+     (113). SLL packet type 4 OUTGOING = uplink, 0 HOST = downlink; ARPHRD_NONE; protocol 0x0800/0x86DD;
+     PCAP lengths include the 16-byte SLL header. No per-packet metadata beyond direction/time/lengths.
+     Timestamps: CLOCK_BOOTTIME at the tap, converted with one session anchor (stored in the meta
+     header) so the monotonic time is exactly recoverable and wall-clock steps cannot reorder packets.
+  2. **Header floor (user requirement):** every record keeps at least the IP + transport header
+     (packet parser computes `hdr_len`: IPv4/IPv6 + extension headers + TCP data offset / UDP 8 /
+     ICMP 8), capped at 192 bytes; e.g. IPv6 + TCP with 12 B options = 72 B. Snaplen choices: headers
+     only (`MPC_SNAPLEN_HEADERS`), 128 (default), 256, 512, full. Ring slots hold max(snaplen, 192).
+  3. **Metadata:** `<id>.meta`, binary, little endian, versioned (docs/META_FORMAT.md v1.0): 64-byte
+     header (magic, version, session UUID, PCAP clock anchor) + 8-byte-aligned records
+     `{u16 type, u16 flags, u32 length, i64 monotonic ns, payload}`; unknown types skipped by length;
+     presence bitmaps mark unavailable values; flags carry the timestamp source (logger, sensor,
+     location fix, modem, packet). Records: SESSION_INFO, CLOCK_SYNC, SESSION_END, CAPTURE_STATS,
+     DROPPED_EVENTS, SENSOR_STATUS, LOCATION, GNSS_STATUS, MOTION_SAMPLE, RADIO_STATE, CELL_IDENTITY,
+     CELL_MEASUREMENT, SIGNAL_STRENGTH, NETWORK_STATE, WIFI_STATE, UID_MAPPING, FLOW_MAPPING.
+  4. **Writer:** Kotlin `MetaWriter`: pool of preallocated 4 KiB buffers + bounded queue + one writer
+     thread with a 64 KiB staging buffer, flush ~1 s, fsync at Stop. Producers never block (pool
+     empty → drop counted, `DROPPED_EVENTS`); only SESSION_INFO / SESSION_END / start-stop CLOCK_SYNC
+     wait (≤ 2 s) for a buffer. Encoders are inline (no lambda/record objects per motion sample).
+  5. **Collectors**, each independent: Clock (start, 60 s, time/timezone broadcasts, stop), Location
+     (fused/GPS with min time/distance, fix timestamp, GNSS status ≤ 1 Hz), Motion (accelerometer +
+     optional gyroscope, sensor timestamps, modes all / max rate / threshold, 200 ms batching),
+     Radio (TelephonyCallback per listener: signal strengths, data connection state/type, data
+     activity, display override, service state, cell info; periodic `requestCellInfoUpdate`; serving
+     identity separate from measurements; dedupe by modem timestamp; API 29–30 PhoneStateListener),
+     Network (default network callback, Wi-Fi link poll), Apps (UID worker → FLOW_MAPPING with native
+     first-packet time and 5-tuple; PackageRegistry → UID_MAPPING).
+  6. **Flow attribution after the fact:** the UID request now carries the flow's first-packet
+     timestamp (56-byte request). The analyzer matches packet 5-tuple + time to the FLOW_MAPPING
+     with the latest `first_seen_ns` ≤ packet time (5-tuple reuse → new generation). Late-binding hold
+     and per-packet tags of ADR-013 are removed from the writer.
+  7. **Analyzer** `analyzer/mpcanalyze.py` (stdlib): validate, dump, summary, timeline (CSV/JSON),
+     context-at, export-pcapng; state = latest valid; samples = latest with age and stale flag;
+     position interpolated only between fixes ≤ max gap; motion window statistics.
+  8. **Storage/upload:** `<id>.pcap(.partial)` + `<id>.meta(.partial)`; session `format` field keeps
+     legacy (`.pcapng` + `.meta.json`) sessions shareable/movable (not uploadable). Recovery truncates
+     both files to the last complete record and appends SESSION_END(recovered). Upload protocol v2:
+     metadata part is the binary file; receiver validates magic, session id, framing, final
+     SESSION_END complete, and PCAP linktype 113.
+- Consequences: no per-packet app/context in the PCAP itself (by design; `export-pcapng` produces an
+  enriched copy); per-packet record overhead drops from ~68 B (PCAPNG EPB + options) to 32 B (PCAP
+  header + SLL); metadata size depends on motion rate (50 Hz accel+gyro ≈ 4.3 KB/s).
+- Evidence: native `test_pcap`, `test_capture` (first-seen timestamps in UID requests, header floor
+  40/72/48 B with snaplen 32 and headers-only), `check_native.sh` (independent reader + tshark
+  `sll.pkttype`, exact monotonic recovery); JVM `MetaWriterTest` (framing, recovery, drops, oversize,
+  **Kotlin-written session decoded and correlated by the Python analyzer**), `SessionStoreTest`,
+  `UploadIntegrationTest` (Kotlin client ↔ Python receiver v2); receiver 14/14. Device:
+  **NOT TESTED** (phone not connected).
 
 ### Pending decisions
 - Provisional P2 budgets (coordinator sign-off after reviewing P0/P1 numbers in `docs/TEST_RESULTS.md`).
