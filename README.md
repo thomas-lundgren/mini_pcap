@@ -120,11 +120,9 @@ Tap a capture in **Saved captures** to share the pair, upload it, move it, or de
 
 Each recording session produces two files with the same session ID:
 
-```
-Download/MiniPcap/
-├── 5b19ce96-9849-4644-9447-069c49759071.pcap   packets (opens in Wireshark)
-└── 5b19ce96-9849-4644-9447-069c49759071.meta   timestamped measurements and app mappings (binary)
-```
+<p align="center"><img src="docs/images/output-files.svg" width="820" alt="Download/MiniPcap/ holds session-id.pcap (packets with timestamp, direction, lengths and headers; opens in Wireshark) and session-id.meta (position, motion, radio, network, app mappings, clock sync and counters)"></p>
+
+For example `Download/MiniPcap/5b19ce96-9849-4644-9447-069c49759071.pcap` and the matching `.meta`.
 
 The design rule: **packet capture stays simple and fast.** Every packet carries what is needed to
 analyse it on its own (timestamp, direction, lengths, headers). Everything else is recorded once, as
@@ -320,25 +318,7 @@ accept only HTTPS with system-trusted certificates.
 
 ## How it works
 
-```
- Packet path (native C, highest priority)
- selected apps ──► TUN (VpnService) ──► engine thread ──► sockets ──► network
-                                          │  lwIP user-space TCP/IP stack + socket relay
-                                          ├─ tap: timestamp, direction, IP + transport header (+ payload
-                                          │       up to the configured size) into a preallocated
-                                          ▼       lock-free ring, never blocks
-                                   writer thread ──► <id>.pcap   (SLL header added here; 1 MiB writes)
-
- Metadata path (Kotlin, independent)
- GPS, GNSS ───────┐
- accelerometer,   │
- gyroscope ───────┤  collectors on their own   bounded record   binary
- telephony ───────┼─ threads; each encodes a ──► pool / queue ──► writer ──► <id>.meta
- network, Wi-Fi ──┤  record only on new data     (drops counted)  thread    (flush 1 s)
- UID worker ──────┘  (flow → UID, UID → app)
-
- Post-processing:  analyzer/mpcanalyze.py <id>.pcap <id>.meta  →  timeline, context-at, enriched PCAPNG
-```
+<p align="center"><img src="docs/images/architecture.svg" width="900" alt="Architecture: native packet path (TUN, engine thread with lwIP and socket relay, tap, lock-free ring, writer to .pcap); Kotlin metadata path (GPS, motion, telephony, network and flow worker feeding collectors, bounded record pool, writer to .meta); post-processing analyzer combining both files"></p>
 
 - **Forwarding:** traffic from the TUN interface goes into a vendored [lwIP](third_party/lwip/VENDORED.md)
   stack that terminates TCP/UDP locally and relays it over ordinary sockets. MiniPcap excludes itself

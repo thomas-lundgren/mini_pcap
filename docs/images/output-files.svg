@@ -1,0 +1,24 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 225' width='1000' height='225' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>
+<rect width='1000' height='225' rx='14' fill='#ffffff'/>
+<text x='20' y='30' font-size='14' font-weight='700' font-family='ui-monospace,Menlo,Consolas,monospace' fill='#555'>Download/MiniPcap/</text>
+<path d='M20,48 h429 l16,16 v149 h-445 z' fill='#e8f1fb' stroke='#2f6db5' stroke-width='1.5'/>
+<path d='M449,48 v16 h16' fill='none' stroke='#2f6db5' stroke-width='1.5'/>
+<text x='38' y='78' font-size='14' font-weight='700' font-family='ui-monospace,Menlo,Consolas,monospace' fill='#1d1d1f'>&lt;session-id&gt;.pcap</text>
+<text x='38' y='98' font-size='12.5' font-weight='600' fill='#2f6db5'>Packets: opens in Wireshark</text>
+<text x='38' y='122' font-size='12' fill='#333'>• one record per packet, in capture order</text>
+<text x='38' y='140' font-size='12' fill='#333'>• nanosecond timestamp at the capture point</text>
+<text x='38' y='158' font-size='12' fill='#333'>• direction: uplink (SLL type 4) / downlink (0)</text>
+<text x='38' y='176' font-size='12' fill='#333'>• original + captured length</text>
+<text x='38' y='194' font-size='12' fill='#333'>• full IP + transport header, payload up to the set size</text>
+<path d='M535,48 h429 l16,16 v149 h-445 z' fill='#eaf6ec' stroke='#2e8b4a' stroke-width='1.5'/>
+<path d='M964,48 v16 h16' fill='none' stroke='#2e8b4a' stroke-width='1.5'/>
+<text x='553' y='78' font-size='14' font-weight='700' font-family='ui-monospace,Menlo,Consolas,monospace' fill='#1d1d1f'>&lt;session-id&gt;.meta</text>
+<text x='553' y='98' font-size='12.5' font-weight='600' fill='#2e8b4a'>Measurements and apps: binary, timestamped</text>
+<text x='553' y='122' font-size='12' fill='#333'>• position, GNSS, accelerometer, gyroscope</text>
+<text x='553' y='140' font-size='12' fill='#333'>• radio technology, serving + neighbor cells, signal</text>
+<text x='553' y='158' font-size='12' fill='#333'>• network and Wi-Fi state</text>
+<text x='553' y='176' font-size='12' fill='#333'>• flow → UID → app mappings</text>
+<text x='553' y='194' font-size='12' fill='#333'>• clock sync, drop counters, session start / end</text>
+<line x1='465' y1='135' x2='535' y2='135' stroke='#888' stroke-width='1.5' stroke-dasharray='4 3'/>
+<text x='500' y='126' text-anchor='middle' font-size='10.5' fill='#666'>same ID</text>
+</svg>
