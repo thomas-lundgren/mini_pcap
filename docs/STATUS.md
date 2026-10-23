@@ -1,6 +1,6 @@
 # Project Status — MiniPcap (Android packet logger with asynchronous metadata)
 
-**Updated:** 2026-10-23
+**Updated:** 2026-10-23 — release v0.2.0 published (signed APK, SHA-256 16f5256d…335c, built from `8b8cf44`)
 **Milestone:** M0–M6 implemented and device-tested on one phone; P0/P1 measured; M7/P2 partially (soak only)
 **State:** IN PROGRESS — needs independent review, P2 battery/thermal/cellular, and the untested items below.
 Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs/DECISIONS.md`.
