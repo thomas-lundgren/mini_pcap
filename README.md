@@ -1,101 +1,334 @@
-# Mini PCAP Logger (Android, no root)
+# MiniPcap — per-app packet logger for Android (no root)
 
-On-device packet logger built on `VpnService`. A native (NDK) data plane forwards all
-TCP/UDP traffic of the selected apps through an on-device user-space stack (lwIP) and
-records a truncated prefix of every IP packet at the TUN boundary into PCAPNG, with
-direction, a per-flow ID and the owning app UID where Android reports it. A JSON sidecar
-maps UIDs to packages/classes and resolves early packets of each flow retrospectively.
-A foreground notification shows status and has a **Stop logging** action; a finalized
-capture pair can be uploaded on demand to a configurable HTTPS receiver.
+MiniPcap records the network traffic of selected Android apps into standard **PCAPNG** files that
+open directly in Wireshark. Every packet carries its direction and the app that sent or received it,
+and a small JSON sidecar maps those apps to package names. It runs as an on-device VPN, so no root
+and no computer are needed while capturing.
 
-Status, evidence and open items: [`docs/STATUS.md`](docs/STATUS.md),
-[`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md), [`docs/DECISIONS.md`](docs/DECISIONS.md).
+---
 
-## Layout
+## Quick start
 
-```
-app/                    Kotlin: VpnService, notification, UID worker, sidecar, recovery, upload, UI
-native/                 C: engine.c (lwIP + socket relay + tap), capture.c (flow table, ring, writer),
-                        pcapng.c, packet.c, flow.c, ring.c, jni.c; tests/ (host); tools/nettool.c
-third_party/lwip/       vendored heiher/lwip @ e6d5fc6 (BSD-3-Clause)
-validation/scripts/     check_native.sh (M2 gate), pcapng_tool.py (independent reader + sidecar join)
-validation/upload-server/  receiver.py (reference receiver), test_receiver.py, make_certs.sh
-validation/perf/        bench.py (P0/P1 orchestrator), summarize.py, build_nettool.sh
-```
-
-## Build
-
-Requirements: JDK 17, Android SDK (platform 36, build-tools), NDK 27.2.12479018, SDK CMake 3.22.1.
+You need an Android 10+ phone with USB debugging enabled and a computer with the Android SDK/NDK
+(see [Building from source](#building-from-source)).
 
 ```bash
-./gradlew assembleDebug testDebugUnitTest      # APK + JVM tests (incl. upload cross-test)
-./validation/scripts/check_native.sh             # native host tests + PCAPNG validation (tshark)
-python3 -I validation/upload-server/test_receiver.py
+git clone https://github.com/thomas-lundgren/mini_pcap.git && cd mini_pcap
+./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Host tools used by validation: `tshark`/`capinfos` (Wireshark ≥ 4.2), Python 3.10+, gcc/cmake/ninja.
+1. Open **MiniPcap** on the phone. Choose which apps to capture (**All**, **Include** or **Exclude**).
+2. Tap **Start logging** and accept the VPN and notification prompts.
+3. Use your apps as usual. The notification shows elapsed time, packets and file size.
+4. Tap **Stop logging** in the notification (or in the app).
+5. Copy the capture to your computer and open it:
 
-## Use
+   ```bash
+   adb pull /sdcard/Download/MiniPcap/ .
+   wireshark MiniPcap/<capture-id>.pcapng
+   ```
 
-1. Open the app, choose **All / Include / Exclude** apps and bytes per packet (default 256 B),
-   tap **Start logging** and accept the VPN dialog (and the notification permission).
-2. Stop from the notification (**Stop logging**) or in the app. Both files appear under
-   *Saved captures*; tap one to share the pair or upload it.
-3. Settings: HTTPS server URL, optional API token (stored encrypted), Wi-Fi-only, **Test**.
-   **Upload latest** sends the newest *complete* capture + sidecar (never during recording).
-4. Finished pairs are **moved** to `Download/MiniPcap/` (Settings → Storage; on by default), so many
-   captures can be kept and copied off over USB — a desktop file manager (MTP) or
-   `adb pull /sdcard/Download/MiniPcap/`. Captures being recorded never appear there. Turn the setting
-   off to keep pairs private and move individual ones from *Saved captures*.
+   Or connect the phone with USB file transfer and copy `Download/MiniPcap/` with your file manager.
 
-Reading a capture on a computer:
+That's it. The sections below explain what is in the files and what else the app can do.
 
-```bash
-tshark -r <id>.pcapng -T fields -e frame.time_epoch -e frame.packet_flags_direction -e ip.src -e ipv6.src -e frame.comment
-python3 validation/scripts/pcapng_tool.py join <id>.pcapng <id>.meta.json --csv   # timestamp,src,dst,proto,...,uid,packages,app_class
+---
+
+## Contents
+
+- [What you get](#what-you-get)
+- [Using the app](#using-the-app)
+- [Output files](#output-files)
+- [Analysing captures](#analysing-captures)
+- [Uploading to a server](#uploading-to-a-server)
+- [How it works](#how-it-works)
+- [Performance](#performance)
+- [Privacy](#privacy)
+- [Limitations](#limitations)
+- [Building from source](#building-from-source)
+- [Testing and benchmarks](#testing-and-benchmarks)
+- [Repository layout](#repository-layout)
+- [License](#license)
+
+## What you get
+
+- **Per-app capture without root:** an Android `VpnService` carries the traffic of the apps you pick;
+  other apps bypass it untouched.
+- **Standard PCAPNG output:** raw IP packets with microsecond timestamps, truncated to a prefix you
+  choose (64–512 bytes, or full packets).
+- **App attribution per packet:** each packet's comment holds a flow ID and, once Android reports it,
+  the owning app's UID. Packets seen before the UID was known are resolved afterwards via the sidecar.
+- **Direction on every packet:** uplink (app → network) or downlink (network → app), in the standard
+  PCAPNG flags field.
+- **Control from the notification:** a status line updated every second and a **Stop logging** button
+  that works with the app closed.
+- **Crash-safe files:** if Android kills the app mid-capture, the next launch recovers everything
+  written up to that point.
+- **Easy offload:** finished captures are moved to `Download/MiniPcap/` for USB copying, or can be
+  shared, or uploaded to your own HTTPS server.
+
+## Using the app
+
+### Choosing what to capture
+
+| Setting | Meaning |
+|---|---|
+| **All** | Every app's traffic goes through the capture (except MiniPcap itself). |
+| **Include** | Only the apps you select. Everything else bypasses the VPN. |
+| **Exclude** | Everything except the apps you select. |
+| **Bytes per packet** | How much of each IP packet to keep: 64, 128, **256** (default), 512 or full. The original length is always recorded. |
+
+### Starting and stopping
+
+Start from the app. While recording, a notification shows the elapsed time, packet count and file size,
+with a **Stop logging** action. Stopping flushes and closes the files, usually in under a second (2.6 s for a 6 GB capture).
+
+If the app is force-stopped or killed instead, the capture is marked **recovered** on the next launch:
+the PCAPNG file is cut back to its last complete packet and the sidecar is rebuilt from the most recent
+checkpoint (written every 10 seconds).
+
+### Where captures are stored
+
+While recording, files live in the app's private storage. When a capture finishes, MiniPcap **moves**
+the pair to `Download/MiniPcap/`. The copy is checked with SHA-256 before the private one is deleted, so
+each capture exists in one place. You can turn this off in **Settings → Storage** to keep captures
+private, and move individual ones later from **Saved captures**.
+
+Tap a capture in **Saved captures** to share the pair, upload it, move it, or delete it.
+
+## Output files
+
+Each capture is a pair with the same ID:
+
+```
+Download/MiniPcap/
+├── 5b19ce96-9849-4644-9447-069c49759071.pcapng      packets
+└── 5b19ce96-9849-4644-9447-069c49759071.meta.json   apps, flows, statistics
 ```
 
-Direction: `epb_flags` outbound (0x2) = uplink app→network; inbound (0x1) = downlink.
-Comment grammar: `f-<flow>` or `u-<uid>;f-<flow>`; no comment = no flow ID.
+### `<id>.pcapng`
 
-## Reference receiver
+- Link type `LINKTYPE_RAW` (101): packets start at the IPv4/IPv6 header, there is no Ethernet header.
+- Timestamps have microsecond resolution.
+- **Direction** is stored in the packet flags: *outbound* (0x2) means uplink and *inbound* (0x1) means
+  downlink.
+- **Comments** identify the flow and, when known, the app:
+  - `u-10234;f-17` means UID 10234, flow 17
+  - `f-17` means flow 17, with the UID not yet known when the packet was written (look it up in the sidecar)
+  - no comment means the packet is not part of a TCP/UDP flow (e.g. ICMPv6 or a fragment)
 
-```bash
-cd validation/upload-server
-./make_certs.sh <receiver-LAN-IP>      # TEST CA + server cert; copies CA into the debug build
-python3 -I receiver.py --port 9443 --cert certs/server.pem --key certs/server.key --data data --token-file token.txt
+### `<id>.meta.json` (sidecar)
+
+The most useful parts:
+
+```jsonc
+{
+  "capture_id": "5b19ce96-…",
+  "status": "complete",                 // or "recovered" after a force-stop
+  "started_utc": "2026-10-23T04:06:02.472Z",
+  "snaplen_bytes": 256,
+  "filter": { "mode": "include", "packages": ["org.example.app"] },
+  "uid_map": {                          // UID -> apps and class
+    "10234": { "packages": ["org.example.app"], "app_names": ["Example"], "class": "web" }
+  },
+  "flow_uid_map": {                     // flow ID -> UID, including packets written before the UID was known
+    "17": { "uid": 10234, "resolution": "resolved_after_first_packet", "resolve_latency_ms": 3 },
+    "18": { "uid": null,  "resolution": "unresolved_session_ended" }
+  },
+  "stats": { "packets_recorded": 250, "capture_queue_drops": 0 }
+}
 ```
 
-Debug builds additionally trust that test CA (`app/src/debug/res/xml/network_security_config.xml`);
-release builds trust system CAs only and are HTTPS-only.
+It also records clock anchors, the forwarding engine version, the stop reason, native counters and
+known limitations. App classes come from **Settings → App classes** (`package=class` lines), with
+Android system UIDs classified automatically.
 
-## Benchmarks (debug build)
+## Analysing captures
+
+In Wireshark or `tshark`:
+
+```bash
+# time, direction, addresses and app/flow comment for every packet
+tshark -r <id>.pcapng -T fields -e frame.time_epoch -e frame.packet_flags_direction \
+       -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e frame.comment
+```
+
+The bundled reader joins packets with the sidecar, so every row gets the app even when the comment only
+has a flow ID. It uses only the Python standard library:
+
+```bash
+python3 validation/scripts/pcapng_tool.py join <id>.pcapng <id>.meta.json --csv > packets.csv
+#  columns: timestamp_us, src, dst, proto, sport, dport, direction, orig_len, cap_len, flow_id, uid, uid_source, packages, app_class
+python3 validation/scripts/pcapng_tool.py validate <id>.pcapng   # structural check
+```
+
+## Uploading to a server
+
+MiniPcap can send the newest finished capture and its sidecar to an HTTPS server you control. Upload is
+always started by you, never automatic, and is disabled while recording.
+
+1. Run a receiver. A reference implementation (Python standard library only) is included:
+
+   ```bash
+   cd validation/upload-server
+   ./make_certs.sh <your-computer-LAN-IP>    # test CA + server certificate (debug builds trust this CA)
+   python3 -I receiver.py --port 9443 --cert certs/server.pem --key certs/server.key \
+          --data data --token-file token.txt
+   ```
+
+2. In **Settings**, enter `https://<your-computer-LAN-IP>:9443`, optionally an API token (stored
+   encrypted with the Android Keystore), and tap **Test**.
+3. Tap **Upload latest**. Progress appears in a notification. Success is shown only after the server's
+   receipt confirms the SHA-256 of both files. Retrying the same capture is safe and returns the same
+   receipt.
+
+The wire protocol is specified in [`docs/UPLOAD_PROTOCOL.md`](docs/UPLOAD_PROTOCOL.md). Release builds
+accept only HTTPS with system-trusted certificates.
+
+## How it works
+
+```
+ selected apps ──► TUN (VpnService) ──► native engine (C, single thread) ──► sockets ──► network
+                                              │  lwIP user-space TCP/IP stack + socket relay
+                                              │
+                                              ├─ tap: copy packet prefix + flow ID into a
+                                              │       preallocated lock-free ring (never blocks)
+                                              ▼
+                                       writer thread (C) ──► <id>.pcapng   (1 MiB batches)
+                                              ▲
+ Kotlin UID worker ── getConnectionOwnerUid() ┘  once per new flow, batched, off the packet path
+ Kotlin service ── notification, Stop, sidecar, recovery, move to Downloads, upload
+```
+
+- **Forwarding:** traffic from the TUN interface goes into a vendored [lwIP](third_party/lwip/VENDORED.md)
+  stack that terminates TCP/UDP locally and relays it over ordinary sockets. MiniPcap excludes itself
+  from the VPN, so its own sockets go straight to the network.
+- **Capture:** each packet is tapped where it crosses the TUN interface. The packet path never calls
+  into Java, allocates memory, formats text or touches the disk. It copies the prefix into a ring
+  buffer and moves on. If the writer falls behind, records are dropped and counted, and forwarding is
+  never slowed down.
+- **App attribution:** new flows are handed in batches to a Kotlin worker, which asks Android for the
+  owning UID once per flow (with retries) and writes the answer back into the native flow table.
+  Later packets carry the UID directly, and the sidecar covers the earlier ones.
+
+Design decisions and their reasons are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+## Performance
+
+Measured on a Pixel 9 Pro (Android 17) over Wi-Fi, with three repeats per configuration. Full method,
+raw data and environment are in [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md) and
+[`validation/perf/results/`](validation/perf/results/).
+
+| Workload | No VPN | VPN, no capture | VPN + full capture |
+|---|---|---|---|
+| UDP 5,000 packets/s | 0.020 % loss, 7.18 ms median RTT | 0.019 %, 7.48 ms | 0.023 %, 7.63 ms |
+| TCP download | 180 Mbit/s | 177 Mbit/s | 165 Mbit/s (runs 158–183) |
+| TCP upload | 111 Mbit/s | 115 Mbit/s | 120 Mbit/s |
+
+- **Capture cost:** about **+3–5 % app CPU** above VPN forwarding alone. The writer thread spends
+  0.5–1.2 µs per packet, and UID lookups run about once per connection.
+- **Slow storage:** with the writer frozen for 5 seconds under load, app traffic lost 0.04 % and every
+  dropped capture record was counted.
+- **One-hour soak:** 23.6 million packets, no capture drops, memory flat (RSS 160–198 MB), and 3,108
+  of 3,128 flows attributed to an app.
+
+These numbers come from one device and one network. Battery use, cellular networks and other Android
+versions have not been measured yet. See [`docs/STATUS.md`](docs/STATUS.md).
+
+## Privacy
+
+Packet prefixes can contain domain names, cookies, tokens or message content. The 256-byte default
+keeps files small but is **not** a privacy guarantee. While recording, files stay in app-private
+storage. After the move, files in `Download/MiniPcap/` can be copied by anyone with the unlocked phone
+and a USB cable, and read by apps with all-files access. Turn the move off if that matters, and delete
+captures you no longer need. MiniPcap does not intercept TLS and sends nothing anywhere unless you
+press **Upload**.
+
+## Limitations
+
+- **Capture point:** packets are recorded at the VPN interface, not the radio. TCP is terminated
+  locally, so handshake timing and downlink segmentation are the on-device stack's, not the server's.
+- **ICMP is not forwarded:** `ping` fails while capturing. MiniPcap's own traffic and excluded apps are
+  never captured.
+- **Unresolved apps:** very short UDP flows (e.g. some system DNS queries) can end before Android
+  reports their UID, so they stay `unresolved`.
+- **One VPN at a time:** starting another VPN ends the capture (`stop_reason: vpn_revoked`).
+- **Recovered captures:** captures saved after a force-stop are kept and can be moved or shared, but
+  **Upload latest** only picks complete ones.
+
+## Building from source
+
+**Requirements**
+- JDK 17
+- Android SDK with platform 36, NDK `27.2.12479018` and SDK CMake 3.22.1
+- `local.properties` with `sdk.dir=…` (Android Studio creates it)
+
+**Build and install**
+
+```bash
+./gradlew assembleDebug                      # app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+The app targets API 35 and runs on Android 10 (API 29) and newer. The debug build also trusts the
+test CA from `make_certs.sh` and accepts automation commands from `adb` (see below). Release builds do
+neither.
+
+## Testing and benchmarks
+
+**Tests**
+
+```bash
+./gradlew testDebugUnitTest                          # JVM tests, incl. Kotlin client ↔ Python receiver over TLS
+./validation/scripts/check_native.sh                 # native C tests + PCAPNG checked by an independent reader and tshark
+python3 -I validation/upload-server/test_receiver.py # receiver protocol tests
+```
+
+The native tests need gcc, cmake and ninja. The PCAPNG checks also use `tshark`/`capinfos`
+(Wireshark ≥ 4.2) and Python 3.10+.
+
+**Benchmarks**
+
+These compare no VPN, VPN-only and each capture stage on the same device (debug build):
 
 ```bash
 validation/perf/build_nettool.sh && native/build-nettool-host/nettool server 5201 &
 adb shell appops set dev.minipcap ACTIVATE_VPN allow
-python3 -I validation/perf/bench.py --host <host-LAN-IP> --repeats 3 --stall
+python3 -I validation/perf/bench.py --host <computer-LAN-IP> --repeats 3 --stall
 python3 -I validation/perf/summarize.py validation/perf/results/<device>/<date> --md summary.md
+python3 -I validation/perf/soak.py --host <computer-LAN-IP> --minutes 60
 ```
 
-Debug builds accept automation extras on the launcher activity (`--es cmd start|stop|stall|upload|server`);
-release builds ignore them. The `server` command puts the token on the adb command line (visible in
-adbd's log) — use it only with throwaway test tokens.
+**Debug automation**
 
-## Known limitations
+Debug builds accept commands such as:
 
-- Capture point is the VPN TUN, not the radio. TCP is terminated locally by lwIP: SYN-ACK is
-  synthesized before the upstream connect, and downlink segmentation/ACK timing are the stack's.
-- ICMP is not forwarded (ping fails while capturing). Apps excluded from the VPN are not captured;
-  the logger always excludes itself.
-- UID attribution uses `getConnectionOwnerUid` after the first packet; very short UDP flows (e.g.
-  system DNS) can end before the lookup and stay `unresolved`.
-- Only one VPN can be active; starting another VPN stops the capture (`stop_reason: vpn_revoked`).
-- Recovered (force-stopped) captures are kept locally with `status: recovered` and are not
-  selected by *Upload latest*.
+```bash
+adb shell am start -n dev.minipcap/.ui.MainActivity --es cmd start
+```
+
+The commands are `start`, `stop`, `stall`, `upload`, `server`, `move` and `automove`. The `server`
+command puts the token on the adb command line, where adbd logs it, so use it only with throwaway
+test tokens.
+
+## Repository layout
+
+```
+app/                       Android app (Kotlin): VPN service, notification, UID worker, sidecar,
+                           recovery, move to Downloads, upload, UI
+native/                    C data plane: engine.c (lwIP + socket relay + tap), capture.c (flow table,
+                           ring, writer), pcapng.c, packet.c, flow.c, ring.c, jni.c
+  tests/                   host unit tests        tools/nettool.c   workload generator for benchmarks
+third_party/lwip/          vendored lwIP fork (heiher/lwip @ e6d5fc6, BSD-3-Clause)
+validation/scripts/        pcapng_tool.py (independent reader / sidecar join), check_native.sh,
+                           device_lifecycle.py
+validation/upload-server/  reference HTTPS receiver, its tests, test-certificate script
+validation/perf/           benchmark and soak scripts, recorded results
+docs/                      STATUS, TEST_RESULTS, DECISIONS, PERFORMANCE_PLAN, UPLOAD_PROTOCOL
+```
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). The vendored lwIP fork in `third_party/lwip/` keeps its own
+MIT, see [`LICENSE`](LICENSE). The vendored lwIP code in `third_party/lwip/` keeps its own
 BSD-3-Clause license ([`third_party/lwip/LICENSE`](third_party/lwip/LICENSE)).
