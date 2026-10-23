@@ -331,8 +331,20 @@ raw data and environment are in [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md) a
 - **One-hour soak:** 23.6 million packets, no capture drops, memory flat (RSS 160–198 MB), and 3,108
   of 3,128 flows attributed to an app.
 
-These numbers come from one device and one network. Battery use, cellular networks and other Android
-versions have not been measured yet. See [`docs/STATUS.md`](docs/STATUS.md).
+**Current code, host micro-benchmarks** (development PC, not the phone; reproducible with the
+commands under [Testing and benchmarks](#testing-and-benchmarks)):
+
+| Component | Result |
+|---|---|
+| Native tap (parse, flow lookup, ring copy) | 70–90 ns per packet; 0 bytes allocated |
+| Packet file size | 74 bytes per record in headers-only mode (16 B PCAP + 16 B SLL + headers) |
+| Native writer | about 4 million headers-only records/s to disk |
+| Metadata writer | about 1.6 million records/s; about 1.5 bytes allocated per motion sample |
+| Analyzer | about 60,000–70,000 packets/s with flat memory (about 6 minutes for a 1-hour, 23M-packet capture) |
+
+The device numbers come from one phone and one network. Battery use, cellular networks, other Android
+versions and the measurement collectors' overhead have not been measured yet. See
+[`docs/STATUS.md`](docs/STATUS.md) and the coverage map in [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md).
 
 ## Privacy
 
