@@ -22,7 +22,7 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
 | M7 / P2 | PARTIAL | 60-min soak PASS (23.6M records, 0 drops, bounded memory); no energy, thermal-stress, snaplen sweep, cellular, second API level, security review |
 
 ## Verified accomplishments (this session)
-- Native data plane: `native/src/{engine,capture,flow,ring,pcap,packet,jni}.c`; host tests 6/6 suites.
+- Native data plane: `native/src/{engine,relay_tcp,relay_udp,capture,flow,ring,pcap,packet,jni}.c`; host tests 6/6 suites.
 - Android app (Kotlin, no AndroidX), layered packages (ADR-015): capture session lifecycle, metadata
   writer + collectors, flow-owner worker, recovery, move to Downloads, Keystore token, UIDT upload, UI.
 - Reference receiver `validation/upload-server/receiver.py` (stdlib, TLS, idempotent, transactional).
@@ -51,9 +51,8 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
       second Android version (API 29–33 path for upload jobs).
 - [ ] Perfetto/simpleperf profile of `mpc-engine` before any forwarding optimization.
 - [ ] Coordinator sign-off on provisional P2 budgets using TEST_RESULTS §5.
-- [ ] **AGENTS.md needs the owner's update**: its Mission/rules still describe per-packet EPB
-      comments `u-<uid>;f-<id>`, `flow_uid_map` and a JSON sidecar (superseded by ADR-014).
 - [ ] Host test gap: downlink IP-fragmented (chained pbuf) packets through the engine.
+- [ ] Rerun P0/P1 on device: earlier B–F CPU numbers predate the TCP relay busy-loop fix.
 - [ ] ADR-014 on device (phase 5): run `validation/scripts/device_meta_check.py`; Wi-Fi + cellular walk with GPS/radio/motion on; check SLL direction
       in Wireshark, every record type in `mpcanalyze.py dump`, cell refresh rates, NSA override,
       permission-denied paths, FGS location type on Android 17; motion modes and rates; rerun P1 + soak

@@ -1,8 +1,8 @@
 # Low-Overhead Capture: Architecture, Benchmarks and Acceptance Gates
 
-**Status:** P0/P1 measured on Pixel 9 Pro (Android 17) — results in `docs/TEST_RESULTS.md` §5; P2 open.  
+**Status:** P0/P1 measured on Pixel 9 Pro (Android 17) with the **previous PCAPNG build** — results in `docs/TEST_RESULTS.md` §5. That build's TCP relay could spin a core while an app drained a finished download (fixed after the review of 2026-10-23), so its B–F CPU numbers may be inflated; a rerun with the PCAP + `.meta` format is pending. P2 open.  
 **Owner:** Performance/measurement agent, reviewed independently by coordinator and native-capture agent.  
-**Applies to:** Android API 29+, native `VpnService`/TUN data plane, PCAPNG snaplen capture, UID attribution, UI notification, upload.
+**Applies to:** Android API 29+, native `VpnService`/TUN data plane, PCAP (Linux SLL) capture with a header floor, asynchronous metadata (`.meta`, docs/META_FORMAT.md), flow-owner attribution, UI notification, upload. The file formats are defined by ADR-014; this plan defines how cost is measured.
 
 ## 1. Purpose and primary invariant
 
@@ -28,18 +28,20 @@ Native TUN read / downlink forwarder packet-ready
   -> continue forwarding immediately
 
 Writer thread (independent):
-  -> dequeue prefix+fixed metadata -> serialize SHB/IDB/EPB
-  -> append `f-<id>` and optionally `u-<uid>` comment when available
+  -> dequeue record (timestamp, direction, lengths, prefix) -> PCAP record header + 16-byte SLL
   -> batch sequential file writes; periodic flush, sync on Stop
 
-Kotlin worker / control (out of packet path):
-  -> async lookup of UID once per new flow, bounded retries
-  -> batch responses to native flow cache
-  -> package/class resolution; ~1 Hz counters and notification
-  -> finalized capture upload only when recording has stopped
+Kotlin flow-owner worker (out of packet path):
+  -> receives batched new-flow announcements (5-tuple + first-packet time)
+  -> async getConnectionOwnerUid once per flow, bounded retries -> FLOW_MAPPING record
+  -> package/class resolution -> UID_MAPPING record (nothing flows back to native code)
+
+Kotlin metadata collectors (independent of both):
+  -> location, motion, radio, network, clock -> pooled binary records -> one writer -> .meta
+  -> ~1 Hz counters and notification; upload only when recording has stopped
 ```
 
-**MUST NOT occur on a packet-processing/forwarding thread:** per-packet JNI callback, Kotlin `ByteArray` construction, Java GC-triggering capture allocations, framework UID/package lookup, PCAPNG block formatting, file write/fsync, hash computation, UI callback, logcat formatting or server upload.
+**MUST NOT occur on a packet-processing/forwarding thread:** per-packet JNI callback, Kotlin `ByteArray` construction, Java GC-triggering capture allocations, framework UID/package lookup, record formatting, metadata encoding, file write/fsync, hash computation, UI callback, logcat formatting or server upload.
 
 **Native packet path should** reuse a bounded queue/pool (initially test 4/8/16 MiB capacity), minimize parser work, avoid unnecessary packet-body copying, use a cached flow-key hash, and perform one captured-prefix copy. TUN/user-space forwarding may still require unavoidable full-packet copying and read/write syscalls: this project must not claim *zero copies* or *zero syscalls*.
 
@@ -47,13 +49,13 @@ Use an existing, licensed and proven forwarding implementation if possible; opti
 
 ### Flow/UID consistency without blocking
 
-Assign a session-unique 64-bit `flow_id` when possible. Write that ID in every record of that flow, **including packets captured before UID resolution**. Queue unresolved new-flow UID requests asynchronously (deduplicated, bounded), and build a `flow_uid_map` in the sidecar. Initial records can retrospectively inherit the UID and app class in offline processing. If OS UID attribution never succeeds, keep the mapping unknown; do not assign the logger's UID or assume the app from a port. Normalized flow IDs must not be reused across later distinct flow generations on socket/tuple reuse.
+Assign a session-unique 64-bit `flow_id` per flow generation (a 5-tuple reused after FIN/RST or idle expiry is a new generation). Announce each new generation asynchronously (bounded queue; retried on the flow's next packet if the queue was full) with its 5-tuple and the exact capture time of its first packet. The worker writes one FLOW_MAPPING per announced flow, resolved or not. **No per-packet metadata is written to the PCAP:** the analyzer attributes every packet, including those before the lookup finished, by 5-tuple and time. If OS UID attribution never succeeds, keep the mapping unknown; never assign the logger's UID or guess the app from a port.
 
-A packet that cannot be classified into a flow (e.g. some ICMP or non-initial fragments) must still be captured with explicit unknown/missing-flow metadata. The reader must not infer a fake UID. The v1 EPB comment grammar is specified in `IMPLEMENTATION_PLAN.md`; build it in the writer, not on the forwarding thread. A native binary option under an assigned PEN may be explored *later* and must be benchmarked before changing the format.
+A packet that cannot be classified into a flow (e.g. some ICMP or non-initial fragments) is still captured; the analyzer reports it as not attributable and never infers a fake UID.
 
 ### Time semantics
 
-Timestamp UL at native TUN read observation and DL just before native TUN inject/write. Prefer a native monotonic source consistent with Android's elapsed realtime (`CLOCK_BOOTTIME`), with recorded monotonic/UTC anchors. Transform timestamps away from the packet-processing thread. Microsecond PCAPNG resolution is a file encoding property, **not** proof of timestamp accuracy. Validate clock rollback/slew cases separately.
+Timestamp UL at native TUN read observation and DL just before native TUN inject/write. Prefer a native monotonic source consistent with Android's elapsed realtime (`CLOCK_BOOTTIME`), with recorded monotonic/UTC anchors. Transform timestamps away from the packet-processing thread. Nanosecond PCAP resolution is a file encoding property, **not** proof of timestamp accuracy. Validate clock rollback/slew cases separately.
 
 ## 3. Required experimental variants (same forwarding code)
 
@@ -62,10 +64,10 @@ Timestamp UL at native TUN read observation and DL just before native TUN inject
 | A | Direct network, no VPN | Device/network baseline |
 | B | VPN forwarding only; capture tap disabled | Forwarding penalty |
 | C | B + native timestamp/parse/prefix copy + drain-to-null queue | Packet observer + memory-copy overhead |
-| D | C + native PCAPNG writer, UID resolution OFF, compact flow ID ON | Serialization/disk cost |
-| E | D + bounded async UID resolution and flow cache | UID attribution incremental cost |
-| F | Full app capture, 1 Hz notification, sidecar checkpoints | End-to-end implementation cost |
-| G | F snaplen sweep 64, 128, 256, 512 and full | Data-volume sensitivity |
+| D | C + native PCAP writer + `.meta` (no collectors, no flow lookups) | Serialization/disk cost |
+| E | D + flow-owner worker (FLOW_MAPPING, UID_MAPPING) | Attribution incremental cost |
+| F | Full app: + measurement collectors (GPS, motion, radio, network), 1 Hz notification | End-to-end implementation cost |
+| G | F snaplen sweep: headers only, 128, 256, 512 and full | Data-volume sensitivity |
 
 Build all variants behind development-only compile-time/runtime switches; they must run the *same forwarding engine* and traffic workload. A sink/queue variant is meaningful only if its producer/consumer lifetime and queue-copy semantics match production.
 
@@ -77,7 +79,7 @@ Build all variants behind development-only compile-time/runtime switches; they m
 - **TCP traffic:** single and multiple flows (HTTPS or iperf-like); report goodput, connection time and retransmissions if measurable. Test short connection churn and concurrent UDP.
 - **Real-time traffic:** WebRTC/QUIC sample with variable bitrate and p50/p95/p99 one-way packet spacing/RTT where clocks permit; record application-level jitter and stalls, without claiming causality solely from TUN timestamps.
 - **Metadata stress:** many short TCP/UDP flows, ambiguous/missing UID, high connection churn, package-resolution latency. Specifically verify first packet captured before UID lookup completes.
-- **Stalls:** pause/throttle PCAPNG consumer for 1–5 s at fixed packet load, and inject disk-full errors. Measure capture loss/queue watermarks and whether forwarding continues.
+- **Stalls:** pause/throttle the PCAP writer for 1–5 s at fixed packet load, and inject disk-full errors. Measure capture loss/queue watermarks and whether forwarding continues.
 - **Duration:** at least 60 s warmup, 3 paired repeats (randomized A/B/C/D/E/F order where practical), 10 min small-packet stress, and a 1 hour mixed soak. Record temperature/throttling; discard or label distorted comparisons.
 
 ## 5. Measurements and units
@@ -88,7 +90,7 @@ Build all variants behind development-only compile-time/runtime switches; they m
 | Forwarding | app goodput, p50/p95/p99 RTT and/or jitter, forwarding loss, failures, packet boundary changes |
 | CPU | process CPU-time / million forwarded packets, per-thread CPU time, load/thermal state, CPU utilization |
 | GC/JNI/allocations | per-packet JNI crossings in capture path (target 0); per-packet logger heap allocations (target 0), JVM GC counts |
-| Writer | PCAPNG output MB/s and bytes/packet, number and size of file write syscalls, write stall time |
+| Writer | PCAP output MB/s and bytes/packet, metadata records/s and drops, number and size of file write syscalls, write stall time |
 | Memory | native heap/RSS peak, writer queue average/peak occupancy and pool allocation count |
 | Capture correctness | offered/accepted/written/dropped logger records by direction and reason; all counts reconciled |
 | Attribution | UID lookup requests / unique flows, cache hit rate, `INVALID_UID` misses, resolution latency, flow-ID joins |
@@ -112,7 +114,7 @@ Raw output naming suggestion: `validation/perf/<device>/<date>/<variant>-<worklo
 
 - Profiling/code audit confirms no capture-specific per-packet JNI, Kotlin allocation, framework UID lookup, filesystem syscall, string formatting or hash computation.
 - Writer is independent; synthetic 1–5 s writer stall keeps network forwarding operational, queue memory bounded, capture losses **counted**, and no deadlock.
-- Store repeatable B/C/D/E data (all variants on the same workload). Verify UID flow-ID retrospective mapping, PCAPNG parse correctness, and no detectable unbounded allocations.
+- Store repeatable B/C/D/E data (all variants on the same workload). Verify flow attribution by 5-tuple and time in the analyzer, PCAP/metadata parse correctness, and no detectable unbounded allocations.
 - Coordinator records provisional quantitative budgets and accepts any deviations before feature expansion.
 
 ### P2 — Release performance (M7)
@@ -139,13 +141,13 @@ P2 must provide raw traces, summary table including median/spread across repeats
 
 **Forwarder/native agent:** Benchmark candidate forwarding backends and FD/JNI integration; supply no-log forwarding baseline; preserve correct socket protection and throughput.
 
-**Capture/PCAPNG agent:** Build bounded reusable queue/pools, native writer and epoch conversion; supply binary writer tests; instrument *sparse* queue counters; compare C/D/E.
+**Capture/PCAP agent:** Build bounded reusable queue/pools, native writer and epoch conversion; supply binary writer tests; instrument *sparse* queue counters; compare C/D/E.
 
-**UID agent:** Implement asynchronous UID worker, deduplicated lookup requests, flow cache/flow ID, sidecar join and tests for first packet, unresolved and tuple reuse.
+**Attribution agent:** Flow-owner worker, flow announcements and FLOW_MAPPING/UID_MAPPING records; tests for first packet, unresolved flows and tuple reuse (analyzer side).
 
 **Measurement agent (independent):** Own deterministic workloads, experiment scheduler, Perfetto/ADB collection, variant pairing, packet-level integrity checker, bottleneck attribution and independent P0/P1/P2 reports.
 
-**Review agent:** Inspect memory ownership, threading, FD lifecycle, counter reconciliation, parser bounds, short-lived-flow UID join and PCAPNG compatibility; attempt to disprove claimed speedups with A/B tests.
+**Review agent:** Inspect memory ownership, threading, FD lifecycle, counter reconciliation, parser bounds, short-lived-flow attribution and PCAP/metadata compatibility; attempt to disprove claimed speedups with A/B tests.
 
 ## 8. Session handoff checklist
 
@@ -155,6 +157,6 @@ Record in `docs/STATUS.md` and `docs/TEST_RESULTS.md`:
 - Exact build/run/workload commands, seed, traffic rate/packet sizes/direction, network path, repeats and test duration.
 - Raw output artifact paths, calculations and interpretation, any thermal/CPU frequency effects.
 - Gate P0/P1/P2 verdict with named accepting reviewer, unresolved risks, next bounded action.
-- Any changes to code/data contracts including `flow_id`, `uid_map`, `flow_uid_map` and comment grammar.
+- Any changes to code/data contracts: PCAP/SLL conventions, the header floor, META_FORMAT record layouts and FLOW_MAPPING semantics.
 
 **Explicit exclusions:** No unsupported “zero-copy packet capture” claims, no new root permission for MVP, no active-session upload, no forced app/network packet dropping to satisfy logger performance numbers, no claims about physical radio packet timestamps.

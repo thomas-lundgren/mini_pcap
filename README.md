@@ -342,7 +342,9 @@ commands under [Testing and benchmarks](#testing-and-benchmarks)):
 | Metadata writer | about 1.6 million records/s; about 1.5 bytes allocated per motion sample |
 | Analyzer | about 60,000–70,000 packets/s with flat memory (about 6 minutes for a 1-hour, 23M-packet capture) |
 
-The device numbers come from one phone and one network. Battery use, cellular networks, other Android
+The device numbers come from one phone and one network, and from a build whose TCP relay could keep
+one core busy while an app slowly drained a finished download (fixed since), so their CPU figures may
+be on the high side. Battery use, cellular networks, other Android
 versions and the measurement collectors' overhead have not been measured yet. See
 [`docs/STATUS.md`](docs/STATUS.md) and the coverage map in [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md).
 
@@ -457,8 +459,9 @@ app/src/main/java/dev/minipcap/
   storage/                 move to Download/MiniPcap, share provider
   upload/                  HTTPS client, upload job, settings
   service/                 VpnService shell;  notify/  notification builders;  ui/  activities
-native/                    C data plane: engine.c (lwIP + socket relay + tap), capture.c (flow table,
-                           ring, writer), pcap.c (PCAP + SLL), packet.c, flow.c, ring.c, jni.c
+native/                    C data plane: engine.c (event loop, TUN I/O + capture tap, lwIP gateway,
+                           lifecycle), relay_tcp.c, relay_udp.c, capture.c (flow table, ring, writer),
+                           pcap.c (PCAP + SLL), packet.c, flow.c, ring.c, jni.c
   tests/                   host unit tests        tools/nettool.c   workload generator for benchmarks
 third_party/lwip/          vendored lwIP fork (heiher/lwip @ e6d5fc6, BSD-3-Clause)
 validation/scripts/        check_native.sh (native gate), device_lifecycle.py,

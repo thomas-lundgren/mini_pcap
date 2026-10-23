@@ -160,6 +160,16 @@ cached tail) — it reached capacity without any drop.
   ~110–180 Mbit/s TCP, throughput/RTT changes within run-to-run spread. Provisional P2 budgets still need sign-off.
 - No "minimal overhead" claim is made: independent review and P2 (energy, thermal, cellular, snaplen sweep) are open.
 
+## Engine split + relay review (2026-10-23)
+
+| Check | Result | Evidence |
+|---|---|---|
+| Split of engine.c into engine.c / relay_tcp.c / relay_udp.c / engine_internal.h | behavior-preserving | independent review: region diffs identical apart from renames; exported symbols per object only the relay entry points |
+| **TCP relay busy-loop** (found by the review, reproduced by a new test) | FIXED | `test_engine` stalled-reader test: app stops reading after the server's FIN; engine thread CPU during the 1 s stall **100/100 ticks before, 0/100 after** (3/3 runs). Cause: `EPOLLRDHUP` always in the mask and HUP/ERR unmaskable on an fd the relay could not act on. Fix: fd registered only while reading/writing is wanted; socket errors abort the connection. Device CPU numbers measured before this fix may be inflated |
+| 64 KiB read truncated to a 0-byte `tcp_write` (review claim) | not reproducible, guarded | lwIP's `tcp_sndbuf()` clamps to 65535 with window scaling (`TCPWND16`); new 1 MiB download test with a position-dependent pattern verifies every byte; explicit 0xFFFF clamp added |
+| Native library exports | 9 symbols | release `libmpcnative.so` exports only the JNI entry points (`C_VISIBILITY_PRESET hidden`) |
+| AGENTS.md vs code (independent review) | corrected | FLOW_MAPPING "at most one, normally exactly one" with counted gaps, header-floor cap, variant definitions, layer order, teardown end states; added rules for debug-only hooks, legacy sessions, upload eligibility, commit order, counters |
+
 ## ADR-015 review hardening + coverage (2026-10-23)
 
 Four read-only sub-agent reviews (native path; Kotlin metadata path; format/storage/upload

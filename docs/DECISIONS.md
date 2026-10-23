@@ -197,8 +197,14 @@ Format: Date · State · Problem · Options · Evidence · Decision · Consequen
     `meta.collect` (one file per collector, CellInfoMapper, MotionFilter, MeasurementConfig) → meta
   - `session` (SessionStore + SessionFormat, Sessions = process registry/locks/recovery,
     CaptureSession = one recording's lifecycle, MetaSession) → capture, core, meta.*
-  - `storage` (export to Downloads) → session; `upload` → session, storage; `service`
-    (thin VPN/FGS shell) → session, storage, notify; `ui` (MainActivity, DebugCommands, SessionList) on top
+  - `storage` (export to Downloads) → session, core; `upload` → session, storage, core, meta, notify;
+    `service` (thin VPN/FGS shell) → session, storage, notify, capture, meta.collect; `ui`
+    (MainActivity, DebugCommands, SessionList) on top
+  - Native (follow-up): `engine.c` split into `engine.c` (loop, TUN I/O + tap, gateway, lifecycle),
+    `relay_tcp.c`, `relay_udp.c` (entry points `relay_tcp_*` / `relay_udp_*`), shared internals in
+    `src/engine_internal.h`; the .so exports only JNI symbols. The split's review found a TCP relay
+    busy-loop (level-triggered RDHUP/HUP on an fd the relay could not act on): fds are now in the
+    epoll set only while reading or writing is wanted, and socket errors abort the connection.
 - Decision (native): the UID feedback path (resolution ring, eventfd, apply on the forwarding
   thread, per-record uid/flow_id) is removed: attribution is FLOW_MAPPING only. Record header
   16 B (was 32). Flow announcements retried when the queue was full. Ring peak measured by the

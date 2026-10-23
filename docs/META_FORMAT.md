@@ -298,9 +298,10 @@ usually refreshed more often than cell info); PCI and ARFCN are absent there.
 
 ### 0x0051 FLOW_MAPPING
 
-Timestamp = when the lookup finished (`LOGGER`). Every flow announced by the packet path gets
-exactly one FLOW_MAPPING, resolved or not (a flow whose announcement did not fit the queue is
-announced again with its next packet). The analyzer assigns a packet to the mapping with the
+Timestamp = when the lookup finished (`LOGGER`). Each announced flow gets at most one
+FLOW_MAPPING, resolved or not, normally exactly one. A flow whose announcement did not fit the
+queue is announced again with its next packet; remaining gaps are counted (`flow_table_full`,
+`uid_request_queue_overflows`, `DROPPED_EVENTS`) rather than written as records. The analyzer assigns a packet to the mapping with the
 same 5-tuple and the latest `first_seen_ns` not after the packet's monotonic time. A 5-tuple
 reused after FIN/RST or idle expiry starts a new flow with a new `first_seen_ns`; a new
 connection that has no mapping of its own is reported unknown, never inherited. `first_seen_ns`

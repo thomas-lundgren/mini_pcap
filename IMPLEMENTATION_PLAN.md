@@ -1,3 +1,8 @@
+> **Superseded in parts (read first):** this is the original plan. The output format changed to
+> `<id>.pcap` (Linux SLL direction) + binary `<id>.meta` with asynchronous metadata (ADR-014,
+> `docs/META_FORMAT.md`) and the code structure is ADR-015. Where this plan mentions PCAPNG EPB
+> comments, `flow_uid_map` or a JSON sidecar, the ADRs win. Current state: `docs/STATUS.md`.
+
 # Android Lightweight PCAPNG Logger — Agentic Implementation Plan
 
 **Document version:** 1.2 (low-overhead native capture architecture + benchmark gates)  

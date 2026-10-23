@@ -22,7 +22,9 @@ python3 -I validation/perf/soak.py --host <ip> --minutes 60          # device: e
 |---|---|---|---|
 | PCAP opens in Wireshark, UL/DL per packet (§3, AC 1) | `test_pcap` (byte layout, SLL types, protocol); `check_native.sh` (independent reader + tshark `sll.pkttype`, lengths, ns time) | `device_meta_check.py` (both directions) | Host PASS; device NOT TESTED |
 | Truncation keeps direction and lengths; transport header always kept (§2.1, AC 2) | `test_packet` (hdr_len for IPv4/IPv6, TCP options, UDP, ICMP, ext headers incl. AH, fragments, truncation); `test_capture` header floor (snaplen 32 + headers-only: 40/72/48 B); analyzer `validate` + `test_header_floor_validation` | `device_meta_check.py` (validate) | Host PASS |
-| Downlink chained buffers parsed contiguously | — (engine change; `test_engine` covers unchained paths) | NOT TESTED | gap |
+| Downlink chained buffers parsed contiguously | — (needs IP fragmentation through the engine) | NOT TESTED | gap |
+| TCP relay integrity under fast downloads | `test_engine` 1 MiB download, every byte checked against a position-dependent pattern | — | Host PASS |
+| Engine does not spin while an app drains a finished download | `test_engine` stalled reader (engine thread CPU from /proc, < 10 % of a core; measured 0) | — | Host PASS |
 | Packet time = entry into the capture path; monotonic time recoverable (§6) | `check_native.sh` (exact boot_ns from PCAP time); `test_capture` (first-seen = packet ts) | — | Host PASS |
 | Binary metadata format, versioning, unknown types skipped (§5) | `MetaWriterTest` (framing, unknown type, oversize, critical records), `test_unknown_types_and_trailing_fields_are_skipped`; format cross-checked Kotlin → Python | `device_meta_check.py` | Host PASS |
 | Asynchronous, independent sources; missing data explicit (§4, AC 3, 4, 7) | `MotionFilterTest` (all / max rate / threshold); analyzer `before_first_fix`, `no_data`, stale flags | `device_meta_check.py` (SENSOR_STATUS per source, record kinds, accel rate) | Host PASS; device NOT TESTED |
