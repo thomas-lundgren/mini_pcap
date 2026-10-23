@@ -271,9 +271,8 @@ rows):
 | Google Maps | 2,561 | 978 KiB | 7,399 | 8,076 KiB |
 | Spotify | 1,379 | 386 KiB | 1,123 | 800 KiB |
 | Google Play services | 433 | 171 KiB | 455 | 248 KiB |
-| com.measurement.logger | 665 | 127 KiB | 433 | 38 KiB |
 | Google app | 94 | 31 KiB | 96 | 69 KiB |
-| System (DNS, GPS assistance, root) and unattributed | 52 | 4 KiB | 34 | 5 KiB |
+| Other apps, system (DNS, GPS assistance, root) and unattributed | 717 | 131 KiB | 467 | 43 KiB |
 | **Total** | **5,184** | **1.7 MiB** | **9,540** | **9.0 MiB** |
 
 To split a capture by app yourself, group the `timeline` CSV by `packages` and `direction`:
