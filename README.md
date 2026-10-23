@@ -114,6 +114,56 @@ Download/MiniPcap/
   - `f-17` means flow 17, with the UID not yet known when the packet was written (look it up in the sidecar)
   - no comment means the packet is not part of a TCP/UDP flow (e.g. ICMPv6 or a fragment)
 
+#### How per-packet metadata is stored
+
+There are no separate metadata blocks. Each packet is one standard **Enhanced Packet Block** (EPB),
+and its metadata is carried inside that block as two standard PCAPNG **options** after the packet
+bytes:
+
+| Option | Code | Content |
+|---|---|---|
+| `opt_comment` | 1 | app and flow as text: `u-10234;f-17`, or `f-17` while the UID is unknown |
+| `epb_flags` | 2 | 4-byte value; the low bits hold the direction: 2 = outbound (uplink), 1 = inbound (downlink) |
+
+Layout of one EPB for a 60-byte captured packet with comment `u-10234;f-17`. Fields are little-endian
+and padded to 4 bytes:
+
+```
+offset  size  field
+     0     4  block type = 0x00000006 (EPB)
+     4     4  block length = 120
+     8     4  interface id = 0
+    12     8  timestamp in µs since 1970 (high 32 bits, then low 32 bits)
+    20     4  captured length = 60
+    24     4  original length (e.g. 1400, before truncation)
+    28    60  packet bytes (IP header + start of payload)
+    88     4  option header: code 1 (comment), length 12
+    92    12  "u-10234;f-17"
+   104     4  option header: code 2 (flags), length 4
+   108     4  0x00000002 (outbound = uplink)
+   112     4  option header: code 0 (end of options)
+   116     4  block length = 120 (repeated so readers can walk backwards)
+```
+
+Packets that are not part of a TCP/UDP flow have no comment option, and the flags option is omitted
+when the direction is unknown. With both options present, the metadata costs about 28 bytes per packet.
+
+Information that applies to the whole file is written once at the start:
+
+- **Section Header Block:** phone model, Android version and app version.
+- **Interface Description Block:** link type 101 (raw IP), the maximum bytes kept per packet,
+  microsecond timestamps (`if_tsresol` = 6) and the interface name `tun0`.
+
+Because only standard options are used, any PCAPNG reader understands the file without a plugin.
+Wireshark shows the comment as `frame.comment` and the direction as `frame.packet_flags_direction`.
+Anything that would be wasteful to repeat per packet is in the sidecar instead: UID → app names and
+class, and UIDs found after a flow's first packets were already written. That is why some packets
+carry only `f-17`: look up flow 17 in `flow_uid_map` to get the app.
+
+The writer is `mpc_pcapng_epb` in [`native/src/pcapng.c`](native/src/pcapng.c). It formats the comment
+directly into the block on the writer thread, never on the packet-forwarding path. An independent
+reader is [`validation/scripts/pcapng_tool.py`](validation/scripts/pcapng_tool.py).
+
 ### `<id>.meta.json` (sidecar)
 
 The most useful parts:
