@@ -17,6 +17,7 @@ import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.RadioGroup
 import android.widget.Spinner
@@ -53,6 +54,7 @@ class MainActivity : Activity() {
     private lateinit var btnPickApps: Button
     private lateinit var spSnaplen: Spinner
     private lateinit var spVariant: Spinner
+    private lateinit var cbContext: CheckBox
     private lateinit var tvLatest: TextView
     private lateinit var tvUploadStatus: TextView
     private lateinit var btnUpload: Button
@@ -77,6 +79,7 @@ class MainActivity : Activity() {
         btnPickApps = findViewById(R.id.btnPickApps)
         spSnaplen = findViewById(R.id.spSnaplen)
         spVariant = findViewById(R.id.spVariant)
+        cbContext = findViewById(R.id.cbContext)
         tvLatest = findViewById(R.id.tvLatest)
         tvUploadStatus = findViewById(R.id.tvUploadStatus)
         btnUpload = findViewById(R.id.btnUpload)
@@ -98,6 +101,7 @@ class MainActivity : Activity() {
             refresh()
         }
         rgFilter.setOnCheckedChangeListener { _, _ -> saveConfig() }
+        cbContext.setOnCheckedChangeListener { _, _ -> saveConfig() }
         val sel = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) = saveConfig()
             override fun onNothingSelected(p: AdapterView<*>?) {}
@@ -143,9 +147,10 @@ class MainActivity : Activity() {
                 if (i.hasExtra("snaplen")) c = c.copy(snaplen = i.getIntExtra("snaplen", 256))
                 i.getStringExtra("mode")?.let { m -> c = c.copy(filterMode = FilterMode.valueOf(m)) }
                 i.getStringExtra("pkgs")?.let { p -> c = c.copy(selectedPackages = p.split(',').filter { it.isNotBlank() }.toSet()) }
+                if (i.hasExtra("context")) c = c.copy(contextEnabled = i.getBooleanExtra("context", true))
                 CaptureConfig.save(this, c)
                 loadConfig()
-                onStartStop()
+                onStartStop(automated = true)
             }
             "stop" -> CaptureVpnService.active?.let { CaptureVpnService.requestStop(this, it.id) }
             "stall" -> startService(Intent(this, CaptureVpnService::class.java)
@@ -190,6 +195,7 @@ class MainActivity : Activity() {
         })
         spSnaplen.setSelection(CaptureConfig.SNAPLENS.indexOf(c.snaplen).coerceAtLeast(0))
         spVariant.setSelection(c.variant.ordinal)
+        cbContext.isChecked = c.contextEnabled
         btnPickApps.text = getString(R.string.select_apps, c.selectedPackages.size)
         loadingConfig = false
     }
@@ -203,11 +209,12 @@ class MainActivity : Activity() {
             else -> FilterMode.ALL
         }
         val variant = if (BuildConfig.DEBUG) Variant.entries[spVariant.selectedItemPosition] else Variant.F
-        CaptureConfig.save(this, old.copy(filterMode = mode, snaplen = CaptureConfig.SNAPLENS[spSnaplen.selectedItemPosition], variant = variant))
+        CaptureConfig.save(this, old.copy(filterMode = mode, snaplen = CaptureConfig.SNAPLENS[spSnaplen.selectedItemPosition],
+            variant = variant, contextEnabled = cbContext.isChecked))
         btnPickApps.isEnabled = mode != FilterMode.ALL
     }
 
-    private fun onStartStop() {
+    private fun onStartStop(automated: Boolean = false) {
         val a = CaptureVpnService.active
         if (a != null) {
             if (a.state == SessionState.RECORDING) CaptureVpnService.requestStop(this, a.id)
@@ -218,8 +225,30 @@ class MainActivity : Activity() {
             Toast.makeText(this, R.string.include_empty, Toast.LENGTH_LONG).show()
             return
         }
+        // Context recording: ask for the runtime permissions once per Start; capture starts
+        // either way and records "permission_denied" for whatever was refused.
+        // Automation (debug) never shows dialogs: grant with `adb shell pm grant` beforehand.
+        if (c.contextEnabled && !automated) {
+            val missing = CONTEXT_PERMISSIONS.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (missing.isNotEmpty()) {
+                requestPermissions(missing.toTypedArray(), REQ_CONTEXT)
+                return
+            }
+        }
+        prepareVpnAndStart()
+    }
+
+    private fun prepareVpnAndStart() {
         val consent = VpnService.prepare(this)
         if (consent != null) startActivityForResult(consent, REQ_VPN) else CaptureVpnService.start(this)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_CONTEXT) return
+        if (grantResults.any { it != PackageManager.PERMISSION_GRANTED })
+            Toast.makeText(this, R.string.context_permissions_partial, Toast.LENGTH_LONG).show()
+        prepareVpnAndStart()
     }
 
     @Deprecated("Activity result API without AndroidX")
@@ -259,7 +288,7 @@ class MainActivity : Activity() {
         }
         btnStartStop.text = getString(if (recording) R.string.stop_logging else R.string.start_logging)
         btnStartStop.isEnabled = a == null || a.state == SessionState.RECORDING
-        for (v in listOf(rgFilter, spSnaplen, spVariant)) v.isEnabled = !recording
+        for (v in listOf(rgFilter, spSnaplen, spVariant, cbContext)) v.isEnabled = !recording
         for (i in 0 until rgFilter.childCount) rgFilter.getChildAt(i).isEnabled = !recording
         btnPickApps.isEnabled = !recording && rgFilter.checkedRadioButtonId != R.id.rbAll
 
@@ -386,5 +415,8 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_VPN = 1
         private const val REQ_NOTIF = 2
+        private const val REQ_CONTEXT = 3
+        private val CONTEXT_PERMISSIONS = listOf(Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.READ_PHONE_STATE)
     }
 }

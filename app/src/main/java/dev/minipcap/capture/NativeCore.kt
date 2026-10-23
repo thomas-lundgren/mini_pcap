@@ -4,7 +4,7 @@ import java.nio.ByteBuffer
 
 /**
  * JNI facade for the native data plane. Every call here is lifecycle or batched
- * control: start/stop, ~1 Hz counter snapshots and batched UID exchange.
+ * control: start/stop, ~1 Hz counter snapshots and context records, batched UID exchange.
  * No method is invoked per packet.
  */
 object NativeCore {
@@ -33,6 +33,7 @@ object NativeCore {
         userAppl: String,
         os: String,
         hardware: String,
+        uidHoldMs: Int,
     ): Long
 
     /** Ordered stop: quiesce tap, stop forwarding/close TUN, drain+fsync writer. 0 = file complete. */
@@ -46,6 +47,13 @@ object NativeCore {
     @JvmStatic external fun nativeUidPoll(handle: Long, buf: ByteBuffer, max: Int, timeoutMs: Int): Int
 
     @JvmStatic external fun nativeUidDeliver(handle: Long, buf: ByteBuffer, count: Int): Int
+
+    /** Context record kinds (native MPC_CTX_*): STATE is referenced by packets as c=<seq>. */
+    const val CTX_STATE = 1
+    const val CTX_INFO = 2
+
+    /** ~1 Hz: queue one JSON context record for the ctx0 interface. 0 = queued. */
+    @JvmStatic external fun nativeContext(handle: Long, kind: Int, seq: Int, info: ByteArray?, json: ByteArray): Int
 
     /** Benchmark-only synthetic writer stall (PERFORMANCE_PLAN V32). */
     @JvmStatic external fun nativeWriterStall(handle: Long, ms: Int)

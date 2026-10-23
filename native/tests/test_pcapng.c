@@ -18,18 +18,44 @@ static uint16_t le16(const uint8_t *p)
 
 static void test_comment(void)
 {
-    char b[48];
-    size_t n = mpc_format_comment(b, 1042, -1);
-    CHECK(n == 6 && memcmp(b, "f-1042", 6) == 0);
-    n = mpc_format_comment(b, 1042, 10234);
-    CHECK(n == 14 && memcmp(b, "u-10234;f-1042", 14) == 0);
-    n = mpc_format_comment(b, 0, -1);
+    char b[MPC_COMMENT_MAX];
+    size_t n = mpc_format_comment(b, 1042, -1, 0);
+    CHECK(n == 6 && memcmp(b, "f=1042", 6) == 0);
+    n = mpc_format_comment(b, 1042, 10234, 0);
+    CHECK(n == 14 && memcmp(b, "u=10234;f=1042", 14) == 0);
+    n = mpc_format_comment(b, 1042, 10234, 77);
+    CHECK(n == 19 && memcmp(b, "u=10234;f=1042;c=77", 19) == 0);
+    n = mpc_format_comment(b, 0, -1, 5);
+    CHECK(n == 3 && memcmp(b, "c=5", 3) == 0);
+    n = mpc_format_comment(b, 9, -1, 5);
+    CHECK(n == 7 && memcmp(b, "f=9;c=5", 7) == 0);
+    n = mpc_format_comment(b, 0, -1, 0);
     CHECK_EQ(n, 0);
-    n = mpc_format_comment(b, 0, 0);
-    CHECK(n == 3 && memcmp(b, "u-0", 3) == 0);
-    n = mpc_format_comment(b, UINT64_MAX, 2147483647);
-    CHECK(n == strlen("u-2147483647;f-18446744073709551615"));
-    CHECK(memcmp(b, "u-2147483647;f-18446744073709551615", n) == 0);
+    n = mpc_format_comment(b, 0, 0, 0);
+    CHECK(n == 3 && memcmp(b, "u=0", 3) == 0);
+    const char *max = "u=2147483647;f=18446744073709551615;c=4294967295";
+    n = mpc_format_comment(b, UINT64_MAX, 2147483647, UINT32_MAX);
+    CHECK(n == strlen(max) && n < MPC_COMMENT_MAX && memcmp(b, max, n) == 0);
+}
+
+/* Upper PDU context record: tags big endian and unpadded, then the JSON. */
+static void test_upper_pdu(void)
+{
+    uint8_t buf[512];
+    const char *js = "{\"a\":1}";
+    size_t n = mpc_pcapng_upper_pdu_epb(buf, sizeof(buf), 1, 5, "ctx", 3, (const uint8_t *)js, strlen(js));
+    size_t data = 4 + 4 + 4 + 3 + 4 + 7; /* 26 */
+    CHECK_EQ(n, 28 + 28 + 4);            /* data padded to 28, no options, trailer */
+    CHECK_EQ(le32(buf), 6);
+    CHECK_EQ(le32(buf + 8), 1);
+    CHECK_EQ(le32(buf + 20), data);
+    CHECK_EQ(le32(buf + 24), data);
+    static const uint8_t tags[] = {0, 12, 0, 4, 'j', 's', 'o', 'n', 0, 36, 0, 3, 'c', 't', 'x', 0, 0, 0, 0};
+    CHECK(memcmp(buf + 28, tags, sizeof(tags)) == 0);
+    CHECK(memcmp(buf + 28 + sizeof(tags), js, 7) == 0);
+    CHECK(buf[28 + 26] == 0 && buf[28 + 27] == 0);
+    CHECK_EQ(le32(buf + n - 4), n);
+    CHECK_EQ(mpc_pcapng_upper_pdu_epb(buf, 40, 1, 5, "ctx", 3, (const uint8_t *)js, 7), 0);
 }
 
 static void test_shb_idb(void)
@@ -110,6 +136,7 @@ static void test_epb(void)
 int main(void)
 {
     test_comment();
+    test_upper_pdu();
     test_shb_idb();
     test_epb();
     TEST_DONE();

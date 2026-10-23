@@ -25,7 +25,7 @@ Command: `./validation/scripts/check_native.sh`
 | Python independent parser | `pcapng_tool.py check-fixture`: every record's direction, lengths, flow ID, UID, µs timestamp; retrospective join of flow 1's first two packets via `flow_uid_map` | OK |
 | tshark cross-check | `frame.packet_flags_direction` (0x2 UL / 0x1 DL), `frame.len`/`cap_len`, `frame.comment`, `frame.time_epoch` ±1.5 µs for all 12 records; `capinfos` reads Raw IP, µs resolution, snaplen 64 | OK |
 
-## 2. JVM unit tests — PASS (25/25)
+## 2. JVM unit tests — PASS (26/26)
 
 Command: `./gradlew testDebugUnitTest`
 
@@ -33,7 +33,8 @@ Command: `./gradlew testDebugUnitTest`
 |---|---|---|
 | `SessionStoreTest` | 6 | latest = highest finalize sequence (not creation/mtime); skips active/recovered/unpaired; truncation of a mid-block-killed file; force-stop recovery from checkpoint → `recovered`; STOPPING + complete sidecar → COMPLETE; forwarding-only session without file → FAILED |
 | `CaptureMoverTest` | 8 | (2026-10-23) move to an in-memory Downloads stand-in: copy + fsync + read-back SHA-256 → publish → private deleted, "latest" finds moved pair; corrupted read-back → rollback, private kept; system cancel → rollback, retried; no space / name conflict fail safely; only finalized COMPLETE/RECOVERED pairs eligible; reconcile rolls back an interrupted move and finishes a committed one; stale hidden entries replaced; shared files deleted outside the app → pair reported missing |
-| `SidecarTest` | 2 | contract keys, UTC timestamps, null UIDs, stats aggregation, class rules parsing |
+| `SidecarTest` | 3 | (2026-10-23, ADR-013) schema_version 2, v2 comment grammar, `interfaces`, `context` summary; context Info-column text |
+| `SidecarTest` (before ADR-013) | 2 | contract keys, UTC timestamps, null UIDs, stats aggregation, class rules parsing |
 | `UploadClientTest` | 7 | streaming SHA-256 vs reference, exact multipart length, progress reaches total, cancellation, receipt must match ID + both digests, HTTP error mapping/retryability, HTTPS-only URL validation |
 | `UploadIntegrationTest` | 2 | **Kotlin client ↔ Python receiver over TLS (test CA)**: health 200 / bad token 401; 1.6 MB upload 201 with byte-identical server files; identical retry 200 same receipt; same ID different content 409 without overwrite; wrong digest 422 and no dataset; untrusted CA → TLS error |
 
@@ -158,6 +159,19 @@ cached tail) — it reached capacity without any drop.
   B/C/D/E data on one workload set). Incremental logging cost ≈ +3–5 % process CPU vs B at 2k–5k pps and
   ~110–180 Mbit/s TCP, throughput/RTT changes within run-to-run spread. Provisional P2 budgets still need sign-off.
 - No "minimal overhead" claim is made: independent review and P2 (energy, thermal, cellular, snaplen sweep) are open.
+
+## ADR-013 tags v2 + context records (2026-10-23)
+
+| Check | Result | Evidence |
+|---|---|---|
+| Wireshark decodes Upper-PDU JSON records without plugin | PASS | prototype with tshark 4.2.2: unpadded tags decode (`json.member_with_value`), padded tags do not; Info column shows tag 36 text |
+| `test_pcapng` | PASS | v2 grammar incl. max-length `u=2147483647;f=18446744073709551615;c=4294967295` (< 64 B); Upper PDU byte layout |
+| `test_capture` fixture | PASS | 3 context records (STATE 1, INFO 2, STATE 3) + 12 packets: packets 1–6 `c=1`, 7–12 `c=3`; `ctx_records_written` 3; hold off → `records_uid_late_bound` 0 |
+| `test_capture` late binding | PASS | hold 300 ms: UID delivered 20 ms after flow 1's first 2 packets → both written with `u=10234` (late-bound 2/5); flow 2 resolved after 600 ms → earlier packet stays `f=2` only; no hold bypass |
+| `check_native.sh` | PASS | independent reader: contexts match, every packet's `c=` equals the latest STATE record before it in the file; tshark: 12 packets + 3 JSON context records |
+| JVM / lint | PASS | 26/26; lint 0 errors |
+| Device: sampler output (location, cells, NR NSA, Wi-Fi), permissions flow, FGS location type | **NOT TESTED** | phone not connected |
+| Performance: hold memory, comment size, context file growth, battery | **NOT TESTED** | needs P1 rerun (variants E/F) and soak |
 
 ## Not tested yet
 

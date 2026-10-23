@@ -97,7 +97,7 @@ size_t mpc_pcapng_epb(uint8_t *out, size_t cap, uint32_t if_id, uint64_t ts, con
     w32(out + 20, cap_len);
     w32(out + 24, orig_len);
     size_t o = 28;
-    if (cap_len)
+    if (cap_len && data != out + o) /* data may already be in place (Upper PDU) */
         memcpy(out + o, data, cap_len);
     o += cap_len;
     while (o & 3)
@@ -126,21 +126,59 @@ static size_t u64_dec(char *p, uint64_t v)
     return n;
 }
 
-size_t mpc_format_comment(char *buf, uint64_t flow_id, int32_t uid)
+size_t mpc_format_comment(char *buf, uint64_t flow_id, int32_t uid, uint32_t ctx)
 {
     size_t o = 0;
     if (uid >= 0) {
         buf[o++] = 'u';
-        buf[o++] = '-';
+        buf[o++] = '=';
         o += u64_dec(buf + o, (uint64_t)uid);
-        if (flow_id == 0)
-            return o;
-        buf[o++] = ';';
-    } else if (flow_id == 0) {
-        return 0;
     }
-    buf[o++] = 'f';
-    buf[o++] = '-';
-    o += u64_dec(buf + o, flow_id);
+    if (flow_id) {
+        if (o)
+            buf[o++] = ';';
+        buf[o++] = 'f';
+        buf[o++] = '=';
+        o += u64_dec(buf + o, flow_id);
+    }
+    if (ctx) {
+        if (o)
+            buf[o++] = ';';
+        buf[o++] = 'c';
+        buf[o++] = '=';
+        o += u64_dec(buf + o, ctx);
+    }
     return o;
+}
+
+static size_t pdu_tag(uint8_t *p, uint16_t tag, const void *v, size_t len)
+{
+    p[0] = (uint8_t)(tag >> 8);
+    p[1] = (uint8_t)tag;
+    p[2] = (uint8_t)(len >> 8);
+    p[3] = (uint8_t)len;
+    if (len)
+        memcpy(p + 4, v, len);
+    return 4 + len;
+}
+
+size_t mpc_pcapng_upper_pdu_epb(uint8_t *out, size_t cap, uint32_t if_id, uint64_t ts,
+                                const char *info, size_t info_len, const uint8_t *json,
+                                size_t json_len)
+{
+    if (info_len > 0xffff || json_len > 0xffffff)
+        return 0;
+    size_t total = mpc_pcapng_upper_pdu_max(info_len, json_len);
+    if (cap < total)
+        return 0;
+    /* Build the PDU in place where the EPB packet data goes (offset 28). */
+    uint8_t *d = out + 28;
+    size_t o = pdu_tag(d, 12, "json", 4); /* EXP_PDU_TAG_DISSECTOR_NAME */
+    if (info_len)
+        o += pdu_tag(d + o, 36, info, info_len); /* EXP_PDU_TAG_COL_INFO_TEXT */
+    o += pdu_tag(d + o, 0, NULL, 0); /* EXP_PDU_TAG_END_OF_OPT */
+    memcpy(d + o, json, json_len);
+    o += json_len;
+    /* Header and padding/options around the PDU, reusing the EPB encoder's layout. */
+    return mpc_pcapng_epb(out, cap, if_id, ts, d, (uint32_t)o, (uint32_t)o, NULL, 0, 0);
 }

@@ -14,7 +14,12 @@ data class UidInfo(
     val note: String?,
 )
 
-class PackageRegistry(private val pm: PackageManager, private val rules: Map<String, String>) {
+class PackageRegistry(
+    private val pm: PackageManager,
+    private val rules: Map<String, String>,
+    /** Called once per UID on the registry thread (e.g. to write an app record into the capture). */
+    private val onResolved: (Int, UidInfo) -> Unit = { _, _ -> },
+) {
     private val map = ConcurrentHashMap<Int, UidInfo>()
     private val executor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "uid-packages").apply { priority = Thread.MIN_PRIORITY }
@@ -23,7 +28,13 @@ class PackageRegistry(private val pm: PackageManager, private val rules: Map<Str
     /** Called from the UID worker for every resolved UID; deduplicated, never blocks. */
     fun noteUid(uid: Int) {
         if (map.containsKey(uid)) return
-        executor.execute { if (!map.containsKey(uid)) map[uid] = resolve(uid) }
+        executor.execute {
+            if (!map.containsKey(uid)) {
+                val info = resolve(uid)
+                map[uid] = info
+                runCatching { onResolved(uid, info) }
+            }
+        }
     }
 
     fun snapshot(): Map<Int, UidInfo> = HashMap(map)

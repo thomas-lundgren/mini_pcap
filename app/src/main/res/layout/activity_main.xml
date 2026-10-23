@@ -57,6 +57,12 @@
             <Spinner android:id="@+id/spSnaplen" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" />
         </LinearLayout>
 
+        <CheckBox
+            android:id="@+id/cbContext"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/record_context" />
+
         <LinearLayout
             android:id="@+id/rowVariant"
             android:layout_width="match_parent"

@@ -1,5 +1,6 @@
 package dev.minipcap.service
 
+import android.Manifest
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -16,6 +17,9 @@ import android.util.Log
 import dev.minipcap.BuildConfig
 import dev.minipcap.capture.CaptureConfig
 import dev.minipcap.capture.ClassRules
+import dev.minipcap.capture.ContextSampler
+import dev.minipcap.capture.ContextSummary
+import dev.minipcap.capture.ContextWriter
 import dev.minipcap.capture.CounterSnapshot
 import dev.minipcap.capture.FilterMode
 import dev.minipcap.capture.NativeCore
@@ -23,6 +27,7 @@ import dev.minipcap.capture.PackageRegistry
 import dev.minipcap.capture.Sidecar
 import dev.minipcap.capture.SidecarData
 import dev.minipcap.capture.UidResolver
+import dev.minipcap.capture.Variant
 import dev.minipcap.storage.CaptureFileProvider
 import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.SessionState
@@ -43,6 +48,8 @@ class ActiveCapture(val id: String, val config: CaptureConfig, val startedElapse
     @Volatile var counters: CounterSnapshot? = null
     @Volatile var resolver: UidResolver? = null
     @Volatile var registry: PackageRegistry? = null
+    @Volatile var contextWriter: ContextWriter? = null
+    @Volatile var sampler: ContextSampler? = null
     @Volatile var missingPackages: List<String> = emptyList()
     @Volatile var stopReason: String? = null
 }
@@ -127,15 +134,30 @@ class CaptureVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
+    /** Location access in the background needs the "location" FGS type (while-in-use permission). */
+    private fun locationType(): Int {
+        val cfg = CaptureConfig.load(this)
+        val granted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return if (cfg.contextEnabled && cfg.variant == Variant.F && granted) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+    }
+
     private fun goForeground(n: android.app.Notification) {
+        val loc = locationType()
         if (Build.VERSION.SDK_INT >= 34) {
-            try {
-                startForeground(Notifications.ID_CAPTURE, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "systemExempted FGS rejected, falling back to specialUse: ${e.javaClass.simpleName}")
+            for (type in listOf(ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED or loc,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or loc)) {
+                try {
+                    startForeground(Notifications.ID_CAPTURE, n, type)
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "FGS type $type rejected: ${e.javaClass.simpleName}")
+                }
             }
+            // Never fail to start capture because of the optional location type.
             startForeground(Notifications.ID_CAPTURE, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else if (loc != 0) {
+            startForeground(Notifications.ID_CAPTURE, n, loc)
         } else {
             startForeground(Notifications.ID_CAPTURE, n)
         }
@@ -164,16 +186,23 @@ class CaptureVpnService : VpnService() {
                 fd, path, cfg.snaplen, cfg.mtu, cfg.variant.nativeId, cfg.ringBytes,
                 "mini_pcap_collect ${BuildConfig.VERSION_NAME}",
                 "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-                "${Build.MANUFACTURER} ${Build.MODEL}")
+                "${Build.MANUFACTURER} ${Build.MODEL}",
+                if (cfg.variant.resolvesUids) cfg.uidHoldMs else 0)
             // Handles are tagged heap pointers (may be negative as jlong); errors are -errno.
             if (h in -4095L..0L) throw IllegalStateException("native capture start failed (errno ${-h})")
             a.handle = h
+            val ctxWriter = if (cfg.variant.writesFile) ContextWriter(h) else null
+            a.contextWriter = ctxWriter
             if (cfg.variant.resolvesUids) {
-                val reg = PackageRegistry(packageManager, ClassRules.parse(ClassRules.loadText(this)))
+                val reg = PackageRegistry(packageManager, ClassRules.parse(ClassRules.loadText(this))) { uid, info ->
+                    ctxWriter?.app(uid, info)
+                }
                 a.registry = reg
                 a.resolver = UidResolver(h, getSystemService(ConnectivityManager::class.java)) { reg.noteUid(it) }
                     .also { it.start() }
             }
+            if (ctxWriter != null && cfg.contextEnabled && cfg.variant == Variant.F)
+                a.sampler = ContextSampler(this, ctxWriter, cfg.contextIntervalMs).also { it.start() }
             a.state = SessionState.RECORDING
             store.update(id) { it.copy(state = SessionState.RECORDING) }
             lastCheckpoint = SystemClock.elapsedRealtime()
@@ -183,6 +212,8 @@ class CaptureVpnService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "capture start failed: ${e.message}")
             // Never leave a running native session (and an active VPN) behind on failure.
+            a.sampler?.stop()
+            a.contextWriter?.close()
             a.resolver?.let { NativeCore.nativeStop(a.handle); it.join(1000) }
             if (a.handle != 0L) {
                 NativeCore.nativeStop(a.handle)
@@ -311,6 +342,16 @@ class CaptureVpnService : VpnService() {
             filterPackages = a.config.selectedPackages.toList().takeIf { a.config.filterMode != FilterMode.ALL } ?: emptyList(),
             missingPackages = a.missingPackages, variant = a.config.variant,
             uidMap = a.registry?.snapshot() ?: emptyMap(),
+            context = ContextSummary(
+                enabled = a.sampler != null,
+                intervalMs = a.config.contextIntervalMs,
+                recordsQueued = a.contextWriter?.written ?: 0,
+                recordsRejected = a.contextWriter?.rejected ?: 0,
+                permissions = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.READ_PHONE_STATE).associate {
+                    it.substringAfterLast('.') to (checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED)
+                },
+                uidHoldMs = if (a.config.variant.resolvesUids) a.config.uidHoldMs else 0),
             flowUidMap = r?.flowUidMap?.let { HashMap(it) } ?: emptyMap(),
             counters = c.toMap(), uidStats = uidStats, stopReason = a.stopReason,
             appVersion = BuildConfig.VERSION_NAME, deviceApiLevel = Build.VERSION.SDK_INT,
@@ -342,6 +383,8 @@ class CaptureVpnService : VpnService() {
         notifyListeners()
         val t0 = SystemClock.elapsedRealtime()
         // 1) quiesce tap, stop forwarding, close TUN; 2) drain + flush + fsync + close PCAPNG.
+        a.sampler?.stop() // last context records are queued before the writer drains
+        a.contextWriter?.close() // no native call can follow nativeDestroy
         val rc = NativeCore.nativeStop(a.handle)
         a.resolver?.join(3000)
         a.registry?.shutdown()

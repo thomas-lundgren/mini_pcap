@@ -53,8 +53,13 @@ That's it. The sections below explain what is in the files and what else the app
   other apps bypass it untouched.
 - **Standard PCAPNG output:** raw IP packets with microsecond timestamps, truncated to a prefix you
   choose (64–512 bytes, or full packets).
-- **App attribution per packet:** each packet's comment holds a flow ID and, once Android reports it,
-  the owning app's UID. Packets seen before the UID was known are resolved afterwards via the sidecar.
+- **Tagged packets:** each packet carries its app (UID), flow ID and a reference to the context it was
+  captured in, as `u=10234;f=17;c=842` in the standard packet comment.
+- **Position, motion and radio context:** about once a second the file records location, motion,
+  radio technology, serving and neighbor cells with their signal measurements, and the Wi-Fi link.
+  Packets point to the record in effect.
+- **Self-contained files:** app names and all context are inside the PCAPNG and decode in Wireshark
+  without plugins. The JSON sidecar is a convenient summary.
 - **Direction on every packet:** uplink (app → network) or downlink (network → app), in the standard
   PCAPNG flags field.
 - **Control from the notification:** a status line updated every second and a **Stop logging** button
@@ -105,83 +110,150 @@ Download/MiniPcap/
 
 ### `<id>.pcapng`
 
-- Link type `LINKTYPE_RAW` (101): packets start at the IPv4/IPv6 header, there is no Ethernet header.
-- Timestamps have microsecond resolution.
-- **Direction** is stored in the packet flags: *outbound* (0x2) means uplink and *inbound* (0x1) means
-  downlink.
-- **Comments** identify the flow and, when known, the app:
-  - `u-10234;f-17` means UID 10234, flow 17
-  - `f-17` means flow 17, with the UID not yet known when the packet was written (look it up in the sidecar)
-  - no comment means the packet is not part of a TCP/UDP flow (e.g. ICMPv6 or a fragment)
+The file is self-describing: packets, their app, and the position/motion/radio context they were
+captured in are all inside it. It has two interfaces:
 
-#### How per-packet metadata is stored
+| Interface | Link type | Contains |
+|---|---|---|
+| 0 `tun0` | `LINKTYPE_RAW` (101) | the packets: raw IPv4/IPv6, no Ethernet header |
+| 1 `ctx0` | `LINKTYPE_WIRESHARK_UPPER_PDU` (252) | **context records** as JSON: position, motion, network, cellular and Wi-Fi state, plus one **app record** per app seen |
 
-There are no separate metadata blocks. Each packet is one standard **Enhanced Packet Block** (EPB),
-and its metadata is carried inside that block as two standard PCAPNG **options** after the packet
-bytes:
+Every packet carries three things:
+
+- **Direction** in the packet flags: *outbound* (0x2) = uplink, *inbound* (0x1) = downlink.
+- **Tags** in the packet comment, `key=value` pairs joined by `;`, in the order `u`, `f`, `c`:
+
+  | Tag | Meaning |
+  |---|---|
+  | `u=10234` | app UID (look it up in the app records or the sidecar `uid_map`) |
+  | `f=17` | flow ID: same value for every packet of one TCP connection or UDP session |
+  | `c=842` | sequence number of the context record in effect when the packet was captured |
+
+  Example: `u=10234;f=17;c=842`. A tag is left out when it doesn't apply. Without `f`, the packet
+  isn't part of a TCP/UDP flow (ICMPv6, a fragment). Without `u`, Android hadn't reported the app
+  yet; see below.
+- **Timestamp** in microseconds.
+
+#### Context records
+
+About once per second, MiniPcap writes a JSON record on `ctx0` with the current state. Each section
+reports its own status and age. Values the platform doesn't provide are left out, never guessed.
+
+```jsonc
+{
+  "type": "context", "seq": 842, "time_utc": "2026-10-23T09:14:05.120Z",
+  "location": { "status": "ok", "provider": "fused", "fix_age_ms": 180,
+                "lat": 59.3326, "lon": 18.0649, "alt_m": 31.2, "h_acc_m": 3.8,
+                "speed_mps": 1.4, "bearing_deg": 212.0, "satellites_used": 17 },
+  "motion":   { "status": "ok", "window_ms": 1000, "lin_acc_mean_mps2": 0.42, "gyro_mean_rads": 0.08,
+                "azimuth_deg": 205.1, "pitch_deg": -12.4, "roll_deg": 3.0, "pressure_hpa": 1012.6 },
+  "network":  { "default_transport": "cellular", "validated": true, "metered": true },
+  "cellular": { "status": "ok", "data_rat": "LTE", "override": "NR_NSA", "operator": "24001",
+                "info_age_ms": 640,
+                "serving":   [ { "rat": "LTE", "conn": "primary", "pci": 123, "arfcn": 6300,
+                                 "tac": 4711, "ci": 26138881, "bands": [20],
+                                 "rsrp": -95, "rsrq": -11, "rssnr": 12, "cqi": 9, "ta": 3 },
+                               { "rat": "NR", "conn": "secondary", "pci": 501, "arfcn": 632256,
+                                 "ss_rsrp": -101, "ss_rsrq": -12, "ss_sinr": 8 } ],
+                "neighbors": [ { "rat": "LTE", "pci": 287, "arfcn": 6300, "rsrp": -104, "rsrq": -15 } ] },
+  "wifi":     { "status": "not_connected" }
+}
+```
+
+- **Position:** latitude/longitude, altitude, accuracy, speed, bearing and satellites from Android's
+  location service.
+- **Motion:** linear acceleration and rotation rate averaged over the interval, orientation and air
+  pressure.
+- **Radio:**
+  - radio technology: the data network type, plus the 5G NSA/advanced override
+  - serving and neighbor cells with identities and channel
+  - signal measurements per technology: LTE RSRP/RSRQ/RSSNR/CQI/TA, NR SS-RSRP/RSRQ/SINR, WCDMA
+    RSCP/Ec/No, GSM RSSI
+  - the Wi-Fi link
+- **App records** (`"type": "app"`) map a UID to its packages, app names and class. One is written
+  when each app is first seen, so the file needs no sidecar to name apps.
+
+`c=` points to the latest snapshot taken *before* the packet, not a measurement of that packet.
+Use the age fields to judge how fresh a value is. Cell measurements in particular refresh only as
+often as the modem and Android allow, often every few seconds with the screen off.
+
+Context needs the location and phone permissions, which the app asks for at **Start**. You can turn
+context off with **Record position, motion and radio** on the main screen.
+
+#### How tags are stored
+
+There are no extra metadata blocks for packets. Each packet is one standard **Enhanced Packet Block**
+(EPB), and its metadata is carried inside that block as two standard PCAPNG **options** after the
+packet bytes:
 
 | Option | Code | Content |
 |---|---|---|
-| `opt_comment` | 1 | app and flow as text: `u-10234;f-17`, or `f-17` while the UID is unknown |
+| `opt_comment` | 1 | the tags as text, e.g. `u=10234;f=17;c=842` |
 | `epb_flags` | 2 | 4-byte value; the low bits hold the direction: 2 = outbound (uplink), 1 = inbound (downlink) |
 
-Layout of one EPB for a 60-byte captured packet with comment `u-10234;f-17`. Fields are little-endian
-and padded to 4 bytes:
+Layout of one EPB for a 60-byte captured packet with comment `u=10234;f=17;c=842`. Fields are
+little-endian and padded to 4 bytes:
 
 ```
 offset  size  field
      0     4  block type = 0x00000006 (EPB)
-     4     4  block length = 120
-     8     4  interface id = 0
+     4     4  block length = 128
+     8     4  interface id = 0 (tun0)
     12     8  timestamp in µs since 1970 (high 32 bits, then low 32 bits)
     20     4  captured length = 60
     24     4  original length (e.g. 1400, before truncation)
     28    60  packet bytes (IP header + start of payload)
-    88     4  option header: code 1 (comment), length 12
-    92    12  "u-10234;f-17"
-   104     4  option header: code 2 (flags), length 4
-   108     4  0x00000002 (outbound = uplink)
-   112     4  option header: code 0 (end of options)
-   116     4  block length = 120 (repeated so readers can walk backwards)
+    88     4  option header: code 1 (comment), length 18
+    92    20  "u=10234;f=17;c=842" + 2 padding bytes
+   112     4  option header: code 2 (flags), length 4
+   116     4  0x00000002 (outbound = uplink)
+   120     4  option header: code 0 (end of options)
+   124     4  block length = 128 (repeated so readers can walk backwards)
 ```
 
-Packets that are not part of a TCP/UDP flow have no comment option, and the flags option is omitted
-when the direction is unknown. With both options present, the metadata costs about 28 bytes per packet.
+The tags cost about 32 bytes per packet. A context record is also an EPB, on interface 1. Its data is
+a short Wireshark "exported PDU" header that names the `json` dissector and sets the Info-column text,
+followed by the JSON, so Wireshark decodes it without a plugin.
 
-Information that applies to the whole file is written once at the start:
+Information about the whole file is written once at the start:
 
 - **Section Header Block:** phone model, Android version and app version.
-- **Interface Description Block:** link type 101 (raw IP), the maximum bytes kept per packet,
-  microsecond timestamps (`if_tsresol` = 6) and the interface name `tun0`.
+- **Interface Description Blocks:** for `tun0` and `ctx0`, with link type, bytes kept per packet,
+  microsecond timestamps (`if_tsresol` = 6) and name.
 
-Because only standard options are used, any PCAPNG reader understands the file without a plugin.
-Wireshark shows the comment as `frame.comment` and the direction as `frame.packet_flags_direction`.
-Anything that would be wasteful to repeat per packet is in the sidecar instead: UID → app names and
-class, and UIDs found after a flow's first packets were already written. That is why some packets
-carry only `f-17`: look up flow 17 in `flow_uid_map` to get the app.
+**When `u=` is missing:** Android reports a connection's app shortly after its first packet,
+typically within 1–4 ms. The writer holds packets for up to 0.5 s before writing them, so the app can
+be filled in even for a flow's first packets. Flows that resolve later (or never, like some short
+system DNS lookups) are written without `u=`. Their UID, if found later, is in the sidecar's
+`flow_uid_map`. Holding never causes capture drops: if the queue fills past half, packets are written
+immediately.
 
-The writer is `mpc_pcapng_epb` in [`native/src/pcapng.c`](native/src/pcapng.c). It formats the comment
-directly into the block on the writer thread, never on the packet-forwarding path. An independent
-reader is [`validation/scripts/pcapng_tool.py`](validation/scripts/pcapng_tool.py).
+The writer is `native/src/pcapng.c` and `capture.c`. It formats tags and context records on the
+writer thread, never on the packet-forwarding path. An independent reader is
+[`validation/scripts/pcapng_tool.py`](validation/scripts/pcapng_tool.py).
 
 ### `<id>.meta.json` (sidecar)
 
-The most useful parts:
+A summary next to the capture. The PCAPNG doesn't need it, but it collects everything in one place:
 
 ```jsonc
 {
+  "schema_version": 2,
   "capture_id": "5b19ce96-…",
   "status": "complete",                 // or "recovered" after a force-stop
   "started_utc": "2026-10-23T04:06:02.472Z",
   "snaplen_bytes": 256,
+  "comment_grammar": "u=<uid>;f=<flow_id>;c=<context_seq>, …",
   "filter": { "mode": "include", "packages": ["org.example.app"] },
   "uid_map": {                          // UID -> apps and class
     "10234": { "packages": ["org.example.app"], "app_names": ["Example"], "class": "web" }
   },
-  "flow_uid_map": {                     // flow ID -> UID, including packets written before the UID was known
+  "flow_uid_map": {                     // flow ID -> UID, including flows resolved after their packets were written
     "17": { "uid": 10234, "resolution": "resolved_after_first_packet", "resolve_latency_ms": 3 },
     "18": { "uid": null,  "resolution": "unresolved_session_ended" }
   },
+  "context": { "enabled": true, "interval_ms": 1000, "records_queued": 3600, "uid_hold_ms": 500,
+               "permissions": { "ACCESS_FINE_LOCATION": true, "READ_PHONE_STATE": true } },
   "stats": { "packets_recorded": 250, "capture_queue_drops": 0 }
 }
 ```
@@ -192,21 +264,47 @@ Android system UIDs classified automatically.
 
 ## Analysing captures
 
-In Wireshark or `tshark`:
+**One row per packet,** with app and context columns already joined in. This uses the bundled reader,
+which needs only the Python standard library:
 
 ```bash
-# time, direction, addresses and app/flow comment for every packet
-tshark -r <id>.pcapng -T fields -e frame.time_epoch -e frame.packet_flags_direction \
-       -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e frame.comment
+python3 validation/scripts/pcapng_tool.py join <id>.pcapng --csv > packets.csv
 ```
 
-The bundled reader joins packets with the sidecar, so every row gets the app even when the comment only
-has a flow ID. It uses only the Python standard library:
+The columns are:
+
+- **packet:** `timestamp_us`, `src`, `dst`, `proto`, `sport`, `dport`, `direction`, `orig_len`,
+  `cap_len`, `flow_id`
+- **app:** `uid`, `uid_source`, `packages`, `app_class`
+- **context:** `ctx_seq`, `ctx_age_ms`
+- **position and motion:** `lat`, `lon`, `alt_m`, `h_acc_m`, `speed_mps`, `bearing_deg`,
+  `fix_age_ms`, `lin_acc_mean_mps2`, `gyro_mean_rads`
+- **network and cell:** `transport`, `data_rat`, `rat_override`, `serving_rat`, `serving_pci`,
+  `serving_arfcn`, `serving_dbm`, `serving_quality_db`, `serving_sinr_db`, `neighbor_cells`,
+  `cell_info_age_ms`
+- **Wi-Fi:** `wifi_rssi_dbm`, `wifi_freq_mhz`
+
+Add the sidecar as a second argument (`join <id>.pcapng <id>.meta.json`) to also fill in apps that
+were resolved after their packets were written. Other commands:
 
 ```bash
-python3 validation/scripts/pcapng_tool.py join <id>.pcapng <id>.meta.json --csv > packets.csv
-#  columns: timestamp_us, src, dst, proto, sport, dport, direction, orig_len, cap_len, flow_id, uid, uid_source, packages, app_class
-python3 validation/scripts/pcapng_tool.py validate <id>.pcapng   # structural check
+python3 validation/scripts/pcapng_tool.py contexts <id>.pcapng --csv   # one row per context record
+python3 validation/scripts/pcapng_tool.py validate <id>.pcapng         # structural check
+```
+
+**In Wireshark or `tshark`:**
+
+| To see | Display filter |
+|---|---|
+| packets only | `frame.interface_id == 0` |
+| context and app records (decoded as JSON) | `frame.interface_id == 1` |
+| one flow | `frame.comment matches "(^\|;)f=17(;\|$)"` |
+| one app (packets that carry its UID) | `frame.comment matches "^u=10234;"` |
+| everything captured under context record 842 | `frame.comment matches "c=842$"` |
+
+```bash
+tshark -r <id>.pcapng -Y "frame.interface_id == 0" -T fields \
+       -e frame.time_epoch -e frame.packet_flags_direction -e ip.src -e ip.dst -e frame.comment
 ```
 
 ## Uploading to a server
@@ -242,8 +340,10 @@ accept only HTTPS with system-trusted certificates.
                                               │       preallocated lock-free ring (never blocks)
                                               ▼
                                        writer thread (C) ──► <id>.pcapng   (1 MiB batches)
-                                              ▲
- Kotlin UID worker ── getConnectionOwnerUid() ┘  once per new flow, batched, off the packet path
+                                              ▲   tags u= f= c=, holds packets ≤ 0.5 s for late UIDs
+ Kotlin UID worker ── getConnectionOwnerUid() ┤  once per new flow, batched, off the packet path
+ Kotlin context sampler ── location, sensors, ┘  one JSON context record per second → ctx0
+                           cells, Wi-Fi
  Kotlin service ── notification, Stop, sidecar, recovery, move to Downloads, upload
 ```
 
@@ -255,8 +355,11 @@ accept only HTTPS with system-trusted certificates.
   buffer and moves on. If the writer falls behind, records are dropped and counted, and forwarding is
   never slowed down.
 - **App attribution:** new flows are handed in batches to a Kotlin worker, which asks Android for the
-  owning UID once per flow (with retries) and writes the answer back into the native flow table.
-  Later packets carry the UID directly, and the sidecar covers the earlier ones.
+  owning UID once per flow (with retries). The answer goes to the native flow table, so later
+  packets carry it, and to the writer, which fills it into the flow's packets it is still holding.
+- **Context:** a Kotlin sampler collects location, sensor, cell and Wi-Fi state on its own thread and
+  hands one JSON record per second to the writer. The writer assigns each packet the latest record
+  by timestamp, so the packet path is unchanged.
 
 Design decisions and their reasons are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
@@ -288,7 +391,9 @@ Packet prefixes can contain domain names, cookies, tokens or message content. Th
 keeps files small but is **not** a privacy guarantee. While recording, files stay in app-private
 storage. After the move, files in `Download/MiniPcap/` can be copied by anyone with the unlocked phone
 and a USB cable, and read by apps with all-files access. Turn the move off if that matters, and delete
-captures you no longer need. MiniPcap does not intercept TLS and sends nothing anywhere unless you
+captures you no longer need. With context recording on, a capture also contains your **precise
+location track** and nearby cell and Wi-Fi identifiers. Turn **Record position, motion and radio**
+off if you don't need them. MiniPcap does not intercept TLS and sends nothing anywhere unless you
 press **Upload**.
 
 ## Limitations
@@ -300,6 +405,9 @@ press **Upload**.
 - **Unresolved apps:** very short UDP flows (e.g. some system DNS queries) can end before Android
   reports their UID, so they stay `unresolved`.
 - **One VPN at a time:** starting another VPN ends the capture (`stop_reason: vpn_revoked`).
+- **Context is sampled, not per packet:** about once per second. Cell measurements refresh only as
+  often as the modem and Android allow. Neighbor cells are what the modem reports, and Wi-Fi neighbors
+  (scans) are not recorded. Recording location and sensors costs battery.
 - **Recovered captures:** captures saved after a force-stop are kept and can be moved or shared, but
   **Upload latest** only picks complete ones.
 

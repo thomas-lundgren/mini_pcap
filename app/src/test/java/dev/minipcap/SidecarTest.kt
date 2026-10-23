@@ -1,6 +1,8 @@
 package dev.minipcap
 
 import dev.minipcap.capture.ClassRules
+import dev.minipcap.capture.ContextSampler
+import dev.minipcap.capture.ContextSummary
 import dev.minipcap.capture.FilterMode
 import dev.minipcap.capture.FlowResolution
 import dev.minipcap.capture.Sidecar
@@ -25,12 +27,18 @@ class SidecarTest {
         counters = mapOf("records_written" to 10L, "capture_queue_drops_ul" to 1L, "capture_queue_drops_dl" to 2L,
             "capture_ring_peak_slots" to 4L, "capture_ring_slot_bytes" to 288L),
         uidStats = mapOf("uid_lookup_misses" to 1L), stopReason = "user_stop", appVersion = "0.1.0",
-        deviceApiLevel = 37, anchorBoottimeNs = 5, anchorRealtimeNs = 6)
+        deviceApiLevel = 37, anchorBoottimeNs = 5, anchorRealtimeNs = 6,
+        context = ContextSummary(true, 1000, 300, 0, mapOf("ACCESS_FINE_LOCATION" to true, "READ_PHONE_STATE" to false), 500))
 
     @Test
     fun containsContractFields() {
         val o = JSONObject(Sidecar.build(data()).toString())
-        assertEquals(1, o.getInt("schema_version"))
+        assertEquals(2, o.getInt("schema_version"))
+        assertTrue(o.getString("comment_grammar").startsWith("u=<uid>;f=<flow_id>;c=<context_seq>"))
+        assertEquals("ctx0", o.getJSONArray("interfaces").getJSONObject(1).getString("name"))
+        val ctx = o.getJSONObject("context")
+        assertEquals(500, ctx.getInt("uid_hold_ms"))
+        assertEquals(false, ctx.getJSONObject("permissions").getBoolean("READ_PHONE_STATE"))
         assertEquals("7e3419b2-5b66-47c1-bb3c-e7d4ebc2cd47.pcapng", o.getString("capture_file"))
         assertEquals("android_vpn_tun", o.getString("capture_point"))
         assertEquals("microseconds_since_unix_epoch", o.getString("timestamp_unit"))
@@ -47,6 +55,17 @@ class SidecarTest {
             "stop_reason", "known_limitations", "benchmark_profile", "capture_engine"))
             assertTrue(k, o.has(k))
         assertEquals("full_metadata", o.getString("benchmark_profile"))
+    }
+
+    @Test
+    fun contextInfoTextSummarizesServingCellAndFix() {
+        val cell = JSONObject().put("serving", org.json.JSONArray().put(JSONObject().put("rat", "LTE").put("pci", 123).put("rsrp", -95)))
+        val loc = JSONObject().put("status", "ok").put("h_acc_m", 4.2).put("speed_mps", 1.25)
+        val net = JSONObject().put("default_transport", "cellular")
+        assertEquals("ctx 42 cellular LTE pci 123 -95 dBm | fix ±4 m 1.3 m/s", ContextSampler.infoText(42, loc, cell, net))
+        val nr = JSONObject().put("serving", org.json.JSONArray().put(JSONObject().put("rat", "NR").put("ss_rsrp", -101)))
+        assertEquals("ctx 1 wifi NR -101 dBm | location permission_denied",
+            ContextSampler.infoText(1, JSONObject().put("status", "permission_denied"), nr, JSONObject().put("default_transport", "wifi")))
     }
 
     @Test

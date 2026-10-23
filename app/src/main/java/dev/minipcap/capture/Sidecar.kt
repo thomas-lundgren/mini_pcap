@@ -9,7 +9,17 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/** Everything needed to render the `<capture_id>.meta.json` sidecar (schema_version 1). */
+/** Context records and late UID binding settings for one capture (sidecar "context"). */
+data class ContextSummary(
+    val enabled: Boolean,
+    val intervalMs: Long,
+    val recordsQueued: Long,
+    val recordsRejected: Long,
+    val permissions: Map<String, Boolean>,
+    val uidHoldMs: Int,
+)
+
+/** Everything needed to render the `<capture_id>.meta.json` sidecar (schema_version 2). */
 data class SidecarData(
     val captureId: String,
     val status: String, // "complete" | "recovered" | "recording" (checkpoint)
@@ -30,11 +40,13 @@ data class SidecarData(
     val deviceApiLevel: Int,
     val anchorBoottimeNs: Long,
     val anchorRealtimeNs: Long,
+    val context: ContextSummary? = null,
 )
 
 object Sidecar {
-    const val SCHEMA_VERSION = 1
-    const val WRITER_VERSION = "mpc-native-pcapng-1"
+    const val SCHEMA_VERSION = 2
+    const val WRITER_VERSION = "mpc-native-pcapng-2"
+    const val COMMENT_GRAMMAR = "u=<uid>;f=<flow_id>;c=<context_seq>, keys in this order, each optional; no f = no flow (flow_id 0)"
     const val FORWARDER_NAME = "lwip-heiher-e6d5fc6+socket-relay"
 
     val KNOWN_LIMITATIONS = listOf(
@@ -43,7 +55,9 @@ object Sidecar {
         "UDP is relayed per datagram; downlink datagrams are re-encapsulated by the relay (IP ID/TTL differ from the network).",
         "ICMP is not forwarded by the VPN in v1.",
         "Uplink timestamps are taken at TUN read; downlink timestamps just before TUN write. Microsecond resolution is not microsecond accuracy.",
-        "UID attribution uses ConnectivityManager.getConnectionOwnerUid asynchronously; early packets of a flow carry only the flow ID and are joined through flow_uid_map.",
+        "UID attribution uses ConnectivityManager.getConnectionOwnerUid asynchronously. The writer holds packets briefly (uid_hold_ms) so most early packets already carry u=; packets of flows resolved later carry only f= and are joined through flow_uid_map.",
+        "Context records (interface ctx0) are snapshots taken about once per interval: c=<seq> is the latest snapshot at the time a packet crossed the TUN, not a per-packet measurement. Each section reports its own age (fix_age_ms, info_age_ms, age_ms).",
+        "Cell measurements are what Android reports; refresh rates are limited by the modem and the platform (often several seconds with the screen off).",
         "Packets that are not TCP/UDP with readable ports carry no flow ID comment (flow_id 0).",
         "Capture-queue drops are logging-record drops, never forwarding drops.",
     )
@@ -74,7 +88,20 @@ object Sidecar {
         o.put("direction_encoding", JSONObject()
             .put("epb_flags_outbound", "UPLINK (app -> network)")
             .put("epb_flags_inbound", "DOWNLINK (network -> app)"))
-        o.put("comment_grammar", "f-<flow_id> | u-<uid>;f-<flow_id>; no comment = no flow (flow_id 0)")
+        o.put("comment_grammar", COMMENT_GRAMMAR)
+        o.put("interfaces", JSONArray()
+            .put(JSONObject().put("id", 0).put("name", "tun0").put("linktype", "LINKTYPE_RAW(101)").put("content", "packets"))
+            .put(JSONObject().put("id", 1).put("name", "ctx0").put("linktype", "LINKTYPE_WIRESHARK_UPPER_PDU(252)")
+                .put("content", "JSON records: type=context (position/motion/network/cellular/wifi, referenced as c=<seq>), type=app (uid -> packages)")))
+        d.context?.let { c ->
+            o.put("context", JSONObject()
+                .put("enabled", c.enabled)
+                .put("interval_ms", c.intervalMs)
+                .put("records_queued", c.recordsQueued)
+                .put("records_rejected", c.recordsRejected)
+                .put("permissions", JSONObject(c.permissions as Map<*, *>))
+                .put("uid_hold_ms", c.uidHoldMs))
+        }
         o.put("filter", JSONObject()
             .put("mode", d.filterMode.name.lowercase(Locale.US))
             .put("packages", JSONArray(d.filterPackages.sorted()))

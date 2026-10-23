@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Optional context records (position, cell measurements, radio technology); requested
+         at Start only when "Record position, motion and radio" is on (ADR-013). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- User-initiated data transfer jobs for Upload latest (API 34+). -->
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
 
@@ -56,7 +63,7 @@
             android:name=".service.CaptureVpnService"
             android:exported="false"
             tools:ignore="ForegroundServicePermission"
-            android:foregroundServiceType="systemExempted|specialUse"
+            android:foregroundServiceType="systemExempted|specialUse|location"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />

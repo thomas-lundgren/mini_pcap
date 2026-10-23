@@ -25,6 +25,11 @@ data class CaptureConfig(
     val variant: Variant,
     val mtu: Int = 1500,
     val ringBytes: Int = 8 shl 20,
+    /** Position, motion and radio context records (needs location/phone permissions). */
+    val contextEnabled: Boolean = true,
+    val contextIntervalMs: Long = 1000,
+    /** Writer hold for late UID binding into a flow's first packets (native uid_hold_ms). */
+    val uidHoldMs: Int = 500,
 ) {
     companion object {
         val SNAPLENS = listOf(64, 128, 256, 512, 0)
@@ -40,6 +45,7 @@ data class CaptureConfig(
                 selectedPackages = p.getStringSet("packages", emptySet())!!.toSet(),
                 variant = runCatching { Variant.valueOf(p.getString("variant", null)!!) }
                     .getOrDefault(Variant.F),
+                contextEnabled = p.getBoolean("context", true),
             )
         }
 
@@ -49,6 +55,7 @@ data class CaptureConfig(
                 .putString("filter_mode", c.filterMode.name)
                 .putStringSet("packages", c.selectedPackages)
                 .putString("variant", c.variant.name)
+                .putBoolean("context", c.contextEnabled)
                 .apply()
         }
     }

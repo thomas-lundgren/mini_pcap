@@ -91,6 +91,47 @@ Format: Date · State · Problem · Options · Evidence · Decision · Consequen
   and the pair stays private. Moving is disk I/O concurrent with a new capture (not benchmarked).
 - Evidence: `CaptureMoverTest` (8 tests with an in-memory destination); device tests in TEST_RESULTS §4.
 
+## ADR-013: Self-describing packets: tags v2, context records, late UID binding
+- Date: 2026-10-23 · State: **accepted (device validation pending)** · supersedes the v1 comment grammar
+- Context: the user's intent is per-packet metadata beyond app identity: positioning, motion and radio
+  measurements (signal strength, serving and neighbor cells, radio technology), with packets
+  separable by app without an external join.
+- Decision:
+  1. **Tags v2** in `opt_comment`: `u=<uid>;f=<flow>;c=<ctx>` (keys in this order, each optional).
+     Extensible by adding keys; readable/filterable in Wireshark. The reader also accepts v1.
+  2. **Context records** in the same PCAPNG on interface 1 `ctx0`, `LINKTYPE_WIRESHARK_UPPER_PDU`
+     (252): exported-PDU tags `json` dissector + Info text (unpadded, big endian), then JSON. Wireshark
+     4.2 decodes them with its JSON dissector (verified with tshark). `type: context` records
+     (location, motion, network, cellular serving+neighbors, wifi; ~1 Hz, each section with status and
+     age) are referenced by packets as `c=<seq>`; `type: app` records (uid → packages/names/class) are
+     written when a UID is first resolved, so the file names its apps without the sidecar.
+  3. **Context assignment in the writer by timestamp:** packet gets the latest STATE record with
+     `ts <= packet ts`; the record is always written before the first packet referencing it. The
+     forwarding-thread tap is unchanged (no per-packet cost added there).
+  4. **Late UID binding:** the writer holds records up to `uid_hold_ms` (500 ms default for E/F) and
+     fills a UID that arrived meanwhile (writer-side direct-mapped flow→uid cache fed by a second SPSC
+     ring from the UID worker). Holding is bypassed when the ring is ≥ 50 % full or at Stop, so it can
+     never cause capture drops; `records_uid_late_bound` / `records_hold_bypassed` count it.
+  5. Kotlin `ContextSampler` (own HandlerThread): LocationManager (fused if available, else GPS) at
+     the interval, GNSS status, linear acceleration/gyro/rotation/pressure aggregated per interval,
+     `requestCellInfoUpdate` + `getAllCellInfo` (serving = registered, others = neighbors) for
+     LTE/NR/WCDMA/GSM/TD-SCDMA/CDMA, `SignalStrength`, data network type + display override (NSA),
+     WifiManager link info. Permissions (fine/coarse location, phone state) requested at Start when
+     context is on; refused → section `status: permission_denied`, capture still starts. FGS type
+     `location` added when permitted (needed for background location on Android 11+/14+).
+  6. Sidecar `schema_version` 2: `comment_grammar` v2, `interfaces`, `context` summary.
+- Alternatives rejected: full values in every packet (≈80–120 B/packet, 2–3 GB/h at soak rates, and
+  Kotlin data on the hot path); custom binary EPB options under a PEN (not decoded by stock
+  Wireshark; deferred until a benchmark justifies it, PERFORMANCE_PLAN §2).
+- Consequences: per-packet comment grows by ~4–8 B; ring occupancy grows by hold × packet rate
+  (bypass at 50 %); context adds ~1–3 KB/s of file data; battery cost of location + 50 Hz sensors.
+  Measurements are snapshots, not per-packet measurements (documented in sidecar
+  `known_limitations`).
+- Evidence: native `test_pcapng` (v2 grammar, Upper PDU layout), `test_capture` (fixture with
+  contexts: c= assignment and ordering; late binding 2/5 records bound with a 300 ms hold, none after
+  the hold), `check_native.sh` (independent reader + tshark decode contexts as JSON). Device and
+  performance validation: **NOT TESTED** (phone not connected).
+
 ### Pending decisions
 - Provisional P2 budgets (coordinator sign-off after reviewing P0/P1 numbers in `docs/TEST_RESULTS.md`).
 - Whether recovered captures may be uploaded (would need protocol support for `status: recovered`).

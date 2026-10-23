@@ -23,6 +23,42 @@ typedef struct {
     uint64_t ts_ns;
 } expect_t;
 
+typedef struct {
+    int kind;
+    uint32_t seq;
+    uint64_t ts_ns;
+    const char *info, *json;
+} ctx_t;
+
+/* Context records are queued before the packets they precede (their ts is earlier). */
+static const ctx_t CTX[] = {
+    {MPC_CTX_STATE, 1, 500, "ctx 1 LTE", "{\"type\":\"context\",\"seq\":1,\"cellular\":{\"rat\":\"LTE\"}}"},
+    {MPC_CTX_INFO, 2, 2500, "app 10234", "{\"type\":\"app\",\"seq\":2,\"uid\":10234}"},
+    {MPC_CTX_STATE, 3, 6500, "", "{\"type\":\"context\",\"seq\":3,\"location\":{\"lat\":59.3}}"},
+};
+#define NCTX (int)(sizeof(CTX) / sizeof(CTX[0]))
+
+/* STATE context in effect for a packet at ts (latest STATE with ts_ns <= ts). */
+static uint32_t ctx_for(uint64_t t0, uint64_t ts)
+{
+    uint32_t cur = 0;
+    for (int i = 0; i < NCTX; i++)
+        if (CTX[i].kind == MPC_CTX_STATE && t0 + CTX[i].ts_ns <= ts)
+            cur = CTX[i].seq;
+    return cur;
+}
+
+static void json_str(FILE *f, const char *s)
+{
+    fputc('"', f);
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\')
+            fputc('\\', f);
+        fputc(*s, f);
+    }
+    fputc('"', f);
+}
+
 static expect_t E[64];
 static int NE;
 static FILE *J;
@@ -73,6 +109,10 @@ static int fixture(const char *dir)
         return 1;
     CHECK_EQ(mpc_capture_start_writer(c), 0);
     uint64_t t0 = (uint64_t)c->anchor_boot_ns;
+    for (int i = 0; i < NCTX; i++)
+        CHECK_EQ(mpc_capture_context(c, CTX[i].kind, CTX[i].seq, t0 + CTX[i].ts_ns, CTX[i].info,
+                                     strlen(CTX[i].info), (const uint8_t *)CTX[i].json,
+                                     strlen(CTX[i].json)), 0);
     uint8_t pkt[2048], payload[1400];
     for (size_t i = 0; i < sizeof(payload); i++)
         payload[i] = (uint8_t)i;
@@ -126,6 +166,9 @@ static int fixture(const char *dir)
     CHECK_EQ(cnt[MPC_CNT_uid_resolutions_applied], 2);
     CHECK_EQ(cnt[MPC_CNT_unparsable_packets], 2);
     CHECK_EQ(cnt[MPC_CNT_nonflow_packets], 2);
+    CHECK_EQ(cnt[MPC_CNT_ctx_records_written], NCTX);
+    CHECK_EQ(cnt[MPC_CNT_ctx_records_dropped], 0);
+    CHECK_EQ(cnt[MPC_CNT_records_uid_late_bound], 0); /* hold disabled in this fixture */
 
     /* Expected flow/uid assignments. */
     CHECK(E[0].flow == 1 && E[0].uid == -1);
@@ -144,9 +187,19 @@ static int fixture(const char *dir)
             (long long)c->anchor_boot_ns, (long long)c->anchor_real_ns);
     for (int i = 0; i < NE; i++) {
         long long ts_us = (c->anchor_real_ns + ((long long)E[i].ts_ns - c->anchor_boot_ns)) / 1000;
-        fprintf(J, "  {\"dir\": \"%s\", \"orig_len\": %u, \"cap_len\": %u, \"flow_id\": %llu, \"uid\": %d, \"ts_us\": %lld}%s\n",
+        fprintf(J, "  {\"dir\": \"%s\", \"orig_len\": %u, \"cap_len\": %u, \"flow_id\": %llu, \"uid\": %d, \"ctx\": %u, \"ts_us\": %lld}%s\n",
                 E[i].dir == MPC_DIR_UPLINK ? "uplink" : "downlink", E[i].orig, E[i].cap,
-                (unsigned long long)E[i].flow, E[i].uid, ts_us, i + 1 < NE ? "," : "");
+                (unsigned long long)E[i].flow, E[i].uid, ctx_for(t0, E[i].ts_ns), ts_us, i + 1 < NE ? "," : "");
+    }
+    fprintf(J, " ],\n \"contexts\": [\n");
+    for (int i = 0; i < NCTX; i++) {
+        long long ts_us = (c->anchor_real_ns + ((long long)(t0 + CTX[i].ts_ns) - c->anchor_boot_ns)) / 1000;
+        fprintf(J, "  {\"kind\": \"%s\", \"seq\": %u, \"ts_us\": %lld, \"info\": ",
+                CTX[i].kind == MPC_CTX_STATE ? "state" : "info", CTX[i].seq, ts_us);
+        json_str(J, CTX[i].info);
+        fprintf(J, ", \"json\": ");
+        json_str(J, CTX[i].json);
+        fprintf(J, "}%s\n", i + 1 < NCTX ? "," : "");
     }
     fprintf(J, " ],\n \"flow_uid_map\": {\"1\": 10234}\n}\n");
     fclose(J);
@@ -200,6 +253,66 @@ static void stall(const char *dir)
            (unsigned long long)offered, (unsigned long long)cnt[MPC_CNT_records_written],
            (unsigned long long)drops, (unsigned long long)cnt[MPC_CNT_capture_ring_slots],
            t_prod / 1e6);
+    mpc_capture_destroy(c);
+}
+
+static int count_in_file(const char *path, const char *needle)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -1;
+    static uint8_t buf[1 << 20];
+    size_t len = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    size_t nl = strlen(needle);
+    int count = 0;
+    for (size_t i = 0; i + nl <= len; i++)
+        if (memcmp(buf + i, needle, nl) == 0)
+            count++;
+    return count;
+}
+
+/* Late binding: with a hold window the writer puts a UID resolved shortly after a
+ * flow's first packets into those packets too; a UID arriving after the window does
+ * not rewrite packets already written. */
+static void late_binding(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/late.pcapng", dir);
+    mpc_capture_config cfg = {.pcap_path = path, .snaplen = 64, .mtu = 1500,
+                              .variant = MPC_VARIANT_E_UID, .ring_bytes = 1 << 20, .uid_hold_ms = 300};
+    int err;
+    mpc_capture *c = mpc_capture_create(&cfg, &err);
+    CHECK(c != NULL);
+    if (!c)
+        return;
+    CHECK_EQ(mpc_capture_start_writer(c), 0);
+    uint8_t pkt[256];
+    size_t n = build_tcp(pkt, 4, APP4, 41000, SRV4, 443, 1, 0, 0x02, 65535, NULL, 0);
+    feed(c, MPC_DIR_UPLINK, pkt, n, mpc_now_boottime_ns()); /* A: flow 1, uid pending */
+    n = build_tcp(pkt, 4, SRV4, 443, APP4, 41000, 9, 2, 0x12, 65535, NULL, 0);
+    feed(c, MPC_DIR_DOWNLINK, pkt, n, mpc_now_boottime_ns()); /* B */
+    usleep(20 * 1000);
+    deliver(c, 1, 10234); /* within the 300 ms hold */
+    n = build_tcp(pkt, 4, APP4, 41000, SRV4, 443, 2, 10, 0x10, 65535, NULL, 0);
+    feed(c, MPC_DIR_UPLINK, pkt, n, mpc_now_boottime_ns()); /* C: uid from the flow table */
+    n = build_udp(pkt, 4, APP4, 42000, DNS4, 53, "q", 1);
+    feed(c, MPC_DIR_UPLINK, pkt, n, mpc_now_boottime_ns()); /* D: flow 2 */
+    usleep(600 * 1000);
+    deliver(c, 2, 555); /* after the hold: D already written without a UID */
+    n = build_udp(pkt, 4, DNS4, 53, APP4, 42000, "r", 1);
+    feed(c, MPC_DIR_DOWNLINK, pkt, n, mpc_now_boottime_ns()); /* E: uid from the flow table */
+    CHECK_EQ(mpc_capture_finish(c), 0);
+    uint64_t cnt[MPC_CNT__COUNT];
+    mpc_capture_snapshot(c, cnt, MPC_CNT__COUNT);
+    CHECK_EQ(cnt[MPC_CNT_records_written], 5);
+    CHECK_EQ(cnt[MPC_CNT_records_uid_late_bound], 2);
+    CHECK_EQ(cnt[MPC_CNT_records_hold_bypassed], 0);
+    CHECK_EQ(count_in_file(path, "u=10234;f=1"), 3);
+    CHECK_EQ(count_in_file(path, "u=555;f=2"), 1);
+    CHECK_EQ(count_in_file(path, "f=2"), 2);
+    printf("late binding: %llu of 5 records bound after queuing (hold 300 ms)\n",
+           (unsigned long long)cnt[MPC_CNT_records_uid_late_bound]);
     mpc_capture_destroy(c);
 }
 
@@ -285,6 +398,7 @@ int main(int argc, char **argv)
     mkdir(dir, 0755);
     fixture(dir);
     stall(dir);
+    late_binding(dir);
     storage_error();
     no_alloc_on_tap();
     TEST_DONE();
