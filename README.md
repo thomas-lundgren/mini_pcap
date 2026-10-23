@@ -7,6 +7,8 @@ motion and radio measurements (serving and neighbor cells, signal strength, radi
 ownership, each recorded asynchronously when it changes. A post-processing analyzer combines the two
 by timestamp.
 
+<p align="center"><img src="docs/images/app-main.png" width="320" alt="MiniPcap main screen: start button, app filter, bytes per packet, measurement switches, upload and saved captures"></p>
+
 ---
 
 ## Quick start
@@ -40,6 +42,7 @@ That's it. The sections below explain what is in the files and what else the app
 - [Using the app](#using-the-app)
 - [Output files](#output-files)
 - [Analysing captures](#analysing-captures)
+- [Example: a bike ride](#example-a-bike-ride)
 - [Uploading to a server](#uploading-to-a-server)
 - [How it works](#how-it-works)
 - [Performance](#performance)
@@ -226,6 +229,72 @@ The `timeline` CSV has one row per packet with these columns:
 - **Wi-Fi:** RSSI
 - **position and motion:** position with status (`interpolated`, `latest`, `stale`,
   `before_first_fix`) and fix age, acceleration and gyro statistics
+
+## Example: a bike ride
+
+A real 10-minute capture from a Pixel 9 Pro on a bike ride: mobile data only (LTE with 5G NSA), Google Maps
+navigating and Spotify playing, all apps captured at 128 bytes per packet. IP addresses and positions are
+left out here, but both are in the files.
+
+**Every packet with its app and the device context at that moment** (`timeline`, selected columns and
+rows):
+
+| Time (UTC) | Dir | App | Proto | Port | Length | Captured | Flow | Radio | RSRP | Speed | Fix acc. | Accel max |
+|---|---|---|---|--:|--:|--:|--:|---|--:|--:|--:|--:|
+| 16:38:30.356 | UL | Maps | UDP | 443 | 313 | 128 | 20 | LTE + NR_NSA | -93 dBm | 31.8 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:30.475 | DL | Maps | UDP | 443 | 61 | 61 | 20 | LTE + NR_NSA | -93 dBm | 31.8 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:30.483 | UL | Maps | UDP | 443 | 62 | 62 | 20 | LTE + NR_NSA | -93 dBm | 31.8 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:30.506 | DL | Maps | UDP | 443 | 1273 | 128 | 20 | LTE + NR_NSA | -93 dBm | 31.8 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:30.509 | DL | Maps | UDP | 443 | 1278 | 128 | 20 | LTE + NR_NSA | -93 dBm | 31.8 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:30.515 | UL | Maps | UDP | 443 | 69 | 69 | 20 | LTE + NR_NSA | -93 dBm | 31.8 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:32.959 | UL | Spotify | TCP | 443 | 248 | 128 | 106 | LTE + NR_NSA | -93 dBm | 32.2 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:32.979 | UL | Spotify | TCP | 443 | 1044 | 128 | 106 | LTE + NR_NSA | -93 dBm | 32.2 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:32.979 | DL | Spotify | TCP | 443 | 60 | 60 | 106 | LTE + NR_NSA | -93 dBm | 32.2 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:33.028 | UL | Spotify | TCP | 443 | 88 | 88 | 120 | LTE + NR_NSA | -93 dBm | 32.2 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:33.068 | DL | Spotify | TCP | 443 | 60 | 60 | 106 | LTE + NR_NSA | -93 dBm | 32.2 km/h | 2.5 m | 10.3 m/s² |
+| 16:38:33.088 | DL | Spotify | TCP | 443 | 84 | 84 | 120 | LTE + NR_NSA | -93 dBm | 32.2 km/h | 2.5 m | 10.3 m/s² |
+
+- **Dir** comes from the PCAP itself (SLL packet type 4 = UL, 0 = DL); everything after **Captured**
+  comes from the `.meta` file, matched by timestamp.
+- **Length** is the original IP packet size; **Captured** is what was stored: up to 128 bytes, and
+  always at least the full IP + transport header.
+- **Flow** is the connection; the app comes from that flow's `FLOW_MAPPING`, so packets of different
+  apps that interleave in time are still separated: Maps flow 20 (QUIC) and Spotify flows 106 and 120 (TCP).
+- **RSRP** is the serving cell's latest measurement; **Speed** and **Fix acc.** come from the latest
+  location fix; **Accel max** is the strongest acceleration in the second before the packet (the bumps of
+  the road).
+
+**Traffic per app** in the same capture (every packet attributed; totals equal the PCAP):
+
+| App | UL packets | UL bytes | DL packets | DL bytes |
+|---|--:|--:|--:|--:|
+| Google Maps | 2,561 | 978 KiB | 7,399 | 8,076 KiB |
+| Spotify | 1,379 | 386 KiB | 1,123 | 800 KiB |
+| Google Play services | 433 | 171 KiB | 455 | 248 KiB |
+| com.measurement.logger | 665 | 127 KiB | 433 | 38 KiB |
+| Google app | 94 | 31 KiB | 96 | 69 KiB |
+| System (DNS, GPS assistance, root) and unattributed | 52 | 4 KiB | 34 | 5 KiB |
+| **Total** | **5,184** | **1.7 MiB** | **9,540** | **9.0 MiB** |
+
+To split a capture by app yourself, group the `timeline` CSV by `packages` and `direction`:
+
+```bash
+python3 analyzer/mpcanalyze.py timeline <id>.pcap <id>.meta --csv > packets.csv
+python3 - <<'PY'
+import csv, collections
+t = collections.defaultdict(lambda: [0, 0])
+for r in csv.DictReader(open("packets.csv")):
+    k = (r["packages"] or "unattributed", r["direction"])
+    t[k][0] += 1
+    t[k][1] += int(r["orig_len"])
+for (app, d), (n, b) in sorted(t.items(), key=lambda x: -x[1][1]):
+    print(f"{app:45} {d:9} {n:8} packets {b / 1024:10.0f} KiB")
+PY
+```
+
+To keep only one app's packets in Wireshark, take its flows' ports from the CSV, or write a per-app
+PCAPNG with `export-pcapng`, whose packet comments name the app, and filter on `frame.comment contains
+"com.spotify.music"`.
 
 ## Uploading to a server
 
