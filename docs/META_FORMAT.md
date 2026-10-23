@@ -106,6 +106,9 @@ delay between measurement and delivery is known.
 
 ### 0x0002 CLOCK_SYNC
 
+Both clocks are read back to back in native code (`clock_gettime`), nanosecond precision; the
+record timestamp is the midpoint of two CLOCK_BOOTTIME reads around the CLOCK_REALTIME read.
+
 | Type | Field |
 |---|---|
 | i64 | realtime ns (Unix epoch) taken together with the record timestamp |
@@ -130,7 +133,7 @@ direction, records written, flows, UID lookups, storage errors, …).
 | Type | Field |
 |---|---|
 | u16 | record type that was dropped (0 = any/unknown) |
-| u16 | reason: 1 queue full, 2 record too large, 3 write error |
+| u16 | reason: 1 queue full, 2 record too large (> 1 MiB), 3 write error, 4 encoding error, 5 emitted after the file was closed (counted in SESSION_END only) |
 | u32 | dropped since the previous `DROPPED_EVENTS` of this type/reason |
 | u64 | total dropped of this type/reason in the session |
 
@@ -295,9 +298,13 @@ usually refreshed more often than cell info); PCI and ARFCN are absent there.
 
 ### 0x0051 FLOW_MAPPING
 
-Timestamp = when the lookup finished (`LOGGER`). The analyzer assigns a packet to the mapping with
-the same 5-tuple and the latest `first_seen_ns` not after the packet's monotonic time. A 5-tuple
-reused after FIN/RST or idle expiry starts a new flow with a new `first_seen_ns`.
+Timestamp = when the lookup finished (`LOGGER`). Every flow announced by the packet path gets
+exactly one FLOW_MAPPING, resolved or not (a flow whose announcement did not fit the queue is
+announced again with its next packet). The analyzer assigns a packet to the mapping with the
+same 5-tuple and the latest `first_seen_ns` not after the packet's monotonic time. A 5-tuple
+reused after FIN/RST or idle expiry starts a new flow with a new `first_seen_ns`; a new
+connection that has no mapping of its own is reported unknown, never inherited. `first_seen_ns`
+equals the first packet's PCAP time unless that record was dropped (capture queue full).
 
 | Type | Field |
 |---|---|
@@ -320,8 +327,13 @@ reused after FIN/RST or idle expiry starts a new flow with a new `first_seen_ns`
 ## 6. Robustness
 
 - The writer appends whole records and flushes about once per second; at Stop it writes
-  `CLOCK_SYNC(stop)` and `SESSION_END(complete)` and fsyncs. If the process is killed, the next app
-  start truncates the file after the last complete record and appends `SESSION_END(recovered)`.
+  `CLOCK_SYNC(stop)` and `SESSION_END(complete)` and fsyncs. `SESSION_END` is always the last
+  record: pending loss reports are written just before it and nothing is appended after it.
+  A session end that is followed by other records is not a valid end.
+- The first write error stops the writer and the file is cut back to the last complete record
+  (no torn records); such a session is not finalized and is recovered at the next start.
+- If the process is killed, the next app start truncates the file after the last complete
+  record and appends `SESSION_END(recovered)`.
 - Collectors never block: when the bounded record pool is exhausted the record is dropped and counted;
   `DROPPED_EVENTS` reports the loss. Packet capture is never affected.
 - Missing permissions, sensors or APIs are reported with `SENSOR_STATUS`, never by fabricated values.

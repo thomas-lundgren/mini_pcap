@@ -1,6 +1,6 @@
 package dev.minipcap.upload
 
-import dev.minipcap.storage.SessionStore
+import dev.minipcap.core.AtomicFiles
 import org.json.JSONObject
 import java.io.File
 
@@ -45,7 +45,7 @@ data class UploadRecord(
     }
 }
 
-/** Local upload state, stored separately from the immutable sidecar. */
+/** Local upload state, stored separately from the immutable capture files. */
 class UploadStore(private val dir: File) {
     private fun file(id: String) = File(dir, "$id.upload.json")
 
@@ -57,7 +57,7 @@ class UploadStore(private val dir: File) {
     @Synchronized
     fun update(id: String, f: (UploadRecord) -> UploadRecord): UploadRecord {
         val r = f(get(id)).copy(updatedMs = System.currentTimeMillis())
-        SessionStore.writeAtomic(file(id), r.toJson().toString(2))
+        AtomicFiles.write(file(id), r.toJson().toString(2))
         return r
     }
 

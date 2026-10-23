@@ -73,6 +73,17 @@ int mpc_parse_packet(const uint8_t *p, size_t len, mpc_pkt_info *info)
                 info->hdr_len = (uint16_t)off;
                 continue;
             }
+            if (nh == 51) { /* authentication header: length in 4-byte units minus 2 */
+                if (off + 8 > len) {
+                    info->proto = 0;
+                    return 0;
+                }
+                size_t hlen = ((size_t)p[off + 1] + 2) * 4;
+                nh = p[off];
+                off += hlen;
+                info->hdr_len = (uint16_t)off;
+                continue;
+            }
             if (nh == 44) { /* fragment */
                 if (off + 8 > len) {
                     info->proto = 0;

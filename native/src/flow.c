@@ -91,7 +91,7 @@ mpc_flow_entry *mpc_flow_find(mpc_flow_table *t, const mpc_flow_key *key)
 static void new_generation(mpc_flow_table *t, mpc_flow_entry *e, uint32_t now_s)
 {
     e->flow_id = t->next_flow_id++;
-    e->uid = MPC_UID_UNKNOWN;
+    e->first_seen = 0; /* set by the caller, which knows the packet timestamp */
     e->uid_state = MPC_UID_STATE_NONE;
     e->flags = 0;
     e->last_seen = now_s;

@@ -3,112 +3,195 @@
 
 Reads a session's `<id>.pcap` (Linux SLL, nanosecond PCAP) and `<id>.meta` (binary
 metadata, docs/META_FORMAT.md) and reconstructs the device context of every packet:
-application, radio, position, motion and network state. The input files are never
-modified.
+application, radio, position, motion and network state. Inputs are never modified.
+Packets are streamed (memory stays flat for multi-GB captures); metadata is loaded once.
 
 Commands:
-  validate   <pcap> <meta>                     structural checks of both files
-  dump       <meta> [--type NAME]              decoded metadata records as JSON lines
-  summary    <pcap> <meta>                     counts, time span, sources, drops
-  timeline   <pcap> <meta> [--csv] [options]   one enriched row per packet
-  context-at <pcap> <meta> <time>              device context at a time (epoch s, ISO 8601, or boot:NS)
-  export-pcapng <pcap> <meta> <out.pcapng>     PCAPNG copy with direction flags and context comments
+  validate      <pcap> <meta>                 structural and contract checks of both files
+  dump          <meta> [--type NAME]          decoded metadata records as JSON lines
+  summary       <pcap> <meta>                 counts, time span, apps, sources, losses
+  timeline      <pcap> <meta> [--csv]         one enriched row per packet (streamed)
+  context-at    <pcap> <meta> <time>          device context at a time (epoch s, ISO 8601, or boot:NS)
+  export-pcapng <pcap> <meta> <out.pcapng>    PCAPNG copy with direction flags and context comments
 
-Timeline options:
+Correlation options (timeline, context-at, export-pcapng, summary):
   --max-location-gap S   interpolate position only between fixes at most S seconds apart (default 5)
   --motion-window MS     window for acceleration/gyro statistics before each packet (default 1000)
-  --stale-after S        mark sample-based values older than S seconds as stale (default 10)
+  --stale-after S        mark sample-based radio values older than S seconds as stale (default 10)
 """
+import argparse
 import bisect
+import collections
 import datetime
 import ipaddress
 import json
 import math
+import mmap
 import struct
 import sys
 import uuid
 
-# ---------------------------------------------------------------- PCAP
-
 SLL_DIR = {0: "downlink", 4: "uplink"}  # MiniPcap convention: HOST = DL, OUTGOING = UL
+PROTO_NAMES = {6: "tcp", 17: "udp", 1: "icmp", 58: "icmpv6"}
+UDP_IDLE_NS = 128 * 10 ** 9  # native UDP flow expiry (120 coarse units of ~1.07 s)
 
 
 class FormatError(Exception):
     pass
 
 
+# ---------------------------------------------------------------- PCAP (streamed)
+
+class Pcap:
+    """Streaming reader over a memory-mapped PCAP. Iterating yields
+    (index, ts_ns, direction, cap_len, orig_len, ip_bytes) without copying the file.
+    A record that is incomplete or implausible ends the stream (interrupted write);
+    [truncated_bytes] and [bad_record] say why after a full pass."""
+
+    def __init__(self, path):
+        self.path = path
+        self._f = open(path, "rb")
+        size = self._f.seek(0, 2)
+        if size < 24:
+            self._f.close()
+            raise FormatError("pcap: file shorter than global header")
+        self._m = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
+        magic = struct.unpack_from("<I", self._m, 0)[0]
+        if magic in (0xA1B23C4D, 0xA1B2C3D4):
+            self.endian, self.nano = "<", magic == 0xA1B23C4D
+        elif magic in (0x4D3CB2A1, 0xD4C3B2A1):
+            self.endian, self.nano = ">", magic == 0x4D3CB2A1
+        else:
+            self.close()
+            raise FormatError("pcap: bad magic 0x%08x" % magic)
+        _, _, _, _, self.snaplen, linktype = struct.unpack_from(self.endian + "HHiIII", self._m, 4)
+        if linktype != 113:
+            self.close()
+            raise FormatError("pcap: link type %d, expected LINKTYPE_LINUX_SLL (113)" % linktype)
+        self.ip_snaplen = max(self.snaplen - 16, 0)
+        self.size = size
+        self.truncated_bytes = 0
+        self.bad_record = None
+        self.count = None
+
+    def __iter__(self):
+        m, size, e = self._m, self.size, self.endian
+        hdr = struct.Struct(e + "IIII")
+        mult = 1 if self.nano else 1000
+        off, i = 24, 0
+        mv = memoryview(m)
+        while off + 16 <= size:
+            sec, frac, incl, orig = hdr.unpack_from(m, off)
+            if off + 16 + incl > size:
+                break
+            if incl < 16 or incl > orig or (self.snaplen and incl > self.snaplen):
+                self.bad_record = "implausible record lengths at offset %d" % off
+                break
+            pkttype = m[off + 16] << 8 | m[off + 17]
+            d = SLL_DIR.get(pkttype)
+            if d is None:
+                self.bad_record = "SLL packet type %d is not HOST(0)/OUTGOING(4) at offset %d" % (pkttype, off)
+                break
+            yield i, sec * 1_000_000_000 + frac * mult, d, incl - 16, orig - 16, mv[off + 32:off + 16 + incl]
+            off += 16 + incl
+            i += 1
+        self.truncated_bytes = size - off
+        self.count = i
+
+    def close(self):
+        try:
+            self._m.close()
+        except (AttributeError, BufferError, ValueError):
+            pass
+        self._f.close()
+
+
 def read_pcap(path):
-    data = open(path, "rb").read()
-    if len(data) < 24:
-        raise FormatError("pcap: file shorter than global header")
-    magic = struct.unpack_from("<I", data, 0)[0]
-    if magic == 0xA1B23C4D:
-        e, nano = "<", True
-    elif magic == 0xA1B2C3D4:
-        e, nano = "<", False
-    elif magic in (0x4D3CB2A1, 0xD4C3B2A1):
-        e, nano = ">", magic == 0x4D3CB2A1
-    else:
-        raise FormatError("pcap: bad magic 0x%08x" % magic)
-    vmaj, vmin, _, _, snaplen, linktype = struct.unpack_from(e + "HHiIII", data, 4)
-    if linktype != 113:
-        raise FormatError("pcap: link type %d, expected LINKTYPE_LINUX_SLL (113)" % linktype)
-    packets = []
-    off = 24
-    truncated = 0
-    while off + 16 <= len(data):
-        sec, frac, incl, orig = struct.unpack_from(e + "IIII", data, off)
-        if off + 16 + incl > len(data):
-            truncated = len(data) - off
+    """Small-file convenience (tests, scripts): all packets materialized as dicts."""
+    p = Pcap(path)
+    packets = [{"index": i, "ts_ns": ts, "dir": d, "cap_len": cl, "orig_len": ol, "ip": bytes(ip)}
+               for i, ts, d, cl, ol, ip in p]
+    out = {"snaplen": p.snaplen, "ip_snaplen": p.ip_snaplen, "nano": p.nano, "packets": packets,
+           "truncated_bytes": p.truncated_bytes, "bad_record": p.bad_record}
+    p.close()
+    return out
+
+
+def _ext_walk(data, proto, l4):
+    """IPv6 extension headers (hop-by-hop, routing, destination, fragment, AH) -> (proto, l4 or None)."""
+    for _ in range(8):
+        if proto in (0, 43, 60) and l4 + 8 <= len(data):
+            proto, l4 = data[l4], l4 + (data[l4 + 1] + 1) * 8
+        elif proto == 51 and l4 + 8 <= len(data):
+            proto, l4 = data[l4], l4 + (data[l4 + 1] + 2) * 4
+        elif proto == 44 and l4 + 8 <= len(data):
+            fo = (data[l4 + 2] << 8 | data[l4 + 3]) & 0xFFF8
+            proto, l4 = data[l4], (l4 + 8 if fo == 0 else None)
+            if l4 is None:
+                break
+        else:
             break
-        if incl < 16 or incl > orig or (snaplen and incl > snaplen):
-            raise FormatError("pcap: bad record lengths at offset %d" % off)
-        rec = data[off + 16:off + 16 + incl]
-        pkttype, hatype, alen = struct.unpack_from(">HHH", rec, 0)
-        proto = struct.unpack_from(">H", rec, 14)[0]
-        if pkttype not in SLL_DIR:
-            raise FormatError("pcap: SLL packet type %d is not HOST(0)/OUTGOING(4)" % pkttype)
-        ts_ns = sec * 10 ** 9 + (frac if nano else frac * 1000)
-        packets.append({"index": len(packets), "ts_ns": ts_ns, "dir": SLL_DIR[pkttype], "sll_proto": proto,
-                        "cap_len": incl - 16, "orig_len": orig - 16, "ip": rec[16:]})
-        off += 16 + incl
-    if off != len(data) and not truncated:
-        truncated = len(data) - off
-    return {"snaplen": snaplen, "ip_snaplen": max(snaplen - 16, 0), "nano": nano, "packets": packets,
-            "truncated_bytes": truncated}
+    return proto, l4
+
+
+def parse_ip(data):
+    """(ipver, src_bytes, dst_bytes, proto, sport, dport, l4_offset) from a (possibly
+    truncated) IP prefix; missing parts are None. No string formatting (hot loop)."""
+    if not data:
+        return 0, None, None, None, None, None, None
+    v = data[0] >> 4
+    if v == 4 and len(data) >= 20:
+        src, dst, proto = bytes(data[12:16]), bytes(data[16:20]), data[9]
+        l4 = (data[0] & 15) * 4 if ((data[6] << 8 | data[7]) & 0x1FFF) == 0 else None
+    elif v == 6 and len(data) >= 40:
+        src, dst = bytes(data[8:24]), bytes(data[24:40])
+        proto, l4 = _ext_walk(data, data[6], 40)
+    else:
+        return v if v in (4, 6) else 0, None, None, None, None, None, None
+    sport = dport = None
+    if proto in (6, 17) and l4 is not None and l4 + 4 <= len(data):
+        sport, dport = data[l4] << 8 | data[l4 + 1], data[l4 + 2] << 8 | data[l4 + 3]
+    return v, src, dst, proto, sport, dport, l4
+
+
+def client_syn(direction, ip, data):
+    """Uplink TCP SYN without ACK: the start of a new connection (generation)."""
+    l4 = ip[6]
+    return (direction == "uplink" and ip[3] == 6 and l4 is not None and l4 + 14 <= len(data)
+            and data[l4 + 13] & 0x12 == 0x02)
+
+
+_ADDR_CACHE = {}
+
+
+def addr(b):
+    """Cached textual address (a capture has few distinct addresses)."""
+    s = _ADDR_CACHE.get(b)
+    if s is None:
+        s = str(ipaddress.IPv4Address(b) if len(b) == 4 else ipaddress.IPv6Address(b))
+        if len(_ADDR_CACHE) < 100_000:
+            _ADDR_CACHE[b] = s
+    return s
 
 
 def decode_ip(data):
-    """Best-effort 5-tuple from a (possibly truncated) IP prefix."""
-    out = {"ipver": 0, "src": "", "dst": "", "proto": None, "sport": None, "dport": None}
-    if not data:
-        return out
-    v = data[0] >> 4
-    l4 = None
-    proto = None
-    if v == 4 and len(data) >= 20:
-        ihl = (data[0] & 15) * 4
-        out.update(ipver=4, src=str(ipaddress.IPv4Address(data[12:16])), dst=str(ipaddress.IPv4Address(data[16:20])))
-        proto = data[9]
-        if struct.unpack(">H", data[6:8])[0] & 0x1FFF == 0:
-            l4 = ihl
-    elif v == 6 and len(data) >= 40:
-        out.update(ipver=6, src=str(ipaddress.IPv6Address(data[8:24])), dst=str(ipaddress.IPv6Address(data[24:40])))
-        proto, l4 = data[6], 40
-        for _ in range(8):
-            if proto in (0, 43, 60) and l4 + 8 <= len(data):
-                proto, l4 = data[l4], l4 + (data[l4 + 1] + 1) * 8
-            elif proto == 44 and l4 + 8 <= len(data):
-                fo = struct.unpack(">H", data[l4 + 2:l4 + 4])[0] & 0xFFF8
-                proto, l4 = data[l4], (l4 + 8 if fo == 0 else None)
-                if l4 is None:
-                    break
-            else:
-                break
-    out["proto"] = proto
-    if proto in (6, 17) and l4 is not None and l4 + 4 <= len(data):
-        out["sport"], out["dport"] = struct.unpack(">HH", data[l4:l4 + 4])
-    return out
+    """5-tuple with textual addresses (compatibility helper)."""
+    v, src, dst, proto, sport, dport, _ = parse_ip(data)
+    return {"ipver": v, "src": addr(src) if src else "", "dst": addr(dst) if dst else "", "proto": proto,
+            "sport": sport, "dport": dport}
+
+
+def transport_end(data):
+    """Offset just past the TCP/UDP header, or None if it cannot be determined."""
+    v, _, _, proto, _, _, l4 = parse_ip(data)
+    if l4 is None:
+        return None
+    if proto == 17:
+        return l4 + 8
+    if proto == 6:
+        # Without the data-offset byte the header is incomplete: it is at least 20 bytes.
+        return l4 + (max(20, (data[l4 + 12] >> 4) * 4) if l4 + 13 <= len(data) else 20)
+    return None
 
 
 # ---------------------------------------------------------------- META
@@ -299,37 +382,36 @@ def decode_payload(rtype, payload):
 
 
 def read_meta(path, strict=True):
-    data = open(path, "rb").read()
+    with open(path, "rb") as f:
+        data = f.read()
     if len(data) < 64 or data[:8] != b"MPCMETA\0":
         raise FormatError("meta: bad magic")
     major, minor, hlen = struct.unpack_from("<HHI", data, 8)
     if major != 1:
         raise FormatError("meta: unsupported major version %d" % major)
+    if hlen < 64 or hlen > len(data):
+        raise FormatError("meta: bad header length %d" % hlen)
     sid = str(uuid.UUID(bytes=data[16:32]))
     anchor_boot, anchor_real, start_boot = struct.unpack_from("<qqq", data, 32)
     recs = []
     off = hlen
-    truncated = 0
     while off + 16 <= len(data):
         rtype, flags, length, ts = struct.unpack_from("<HHIq", data, off)
         if length < 16 or length % 8 or off + length > len(data):
-            truncated = len(data) - off
             break
         payload = data[off + 16:off + length]
         try:
             body = decode_payload(rtype, payload)
-        except (struct.error, KeyError, ValueError) as e:
+        except (struct.error, KeyError, ValueError, IndexError) as e:
             if strict:
                 raise FormatError("meta: cannot decode %s at offset %d: %s" % (TYPES.get(rtype, rtype), off, e))
             body = {"decode_error": str(e)}
         recs.append({"type": TYPES.get(rtype, "TYPE_0x%04x" % rtype), "type_id": rtype, "ts_ns": ts,
                      "ts_source": TS_SOURCES.get(flags & 7, flags & 7), "refresh": bool(flags & 8), **body})
         off += length
-    if off < len(data) and not truncated:
-        truncated = len(data) - off
     return {"version": "%d.%d" % (major, minor), "session_id": sid, "anchor_boot_ns": anchor_boot,
             "anchor_real_ns": anchor_real, "start_boot_ns": start_boot, "records": recs,
-            "truncated_bytes": truncated}
+            "truncated_bytes": len(data) - off}
 
 
 # ---------------------------------------------------------------- correlation
@@ -349,8 +431,56 @@ class Series:
         i = bisect.bisect_right(self.ts, t)
         return (self.recs[i - 1] if i > 0 else None), (self.recs[i] if i < len(self.recs) else None)
 
+    def __bool__(self):
+        return bool(self.recs)
+
+
+class MotionSeries:
+    """|x,y,z| per sample with prefix sums: window mean in O(log n); window max via a
+    monotonic deque for time-ordered queries (the timeline), a slice otherwise."""
+
+    def __init__(self, recs):
+        recs = sorted(recs, key=lambda r: r["ts_ns"])
+        self.ts = [r["ts_ns"] for r in recs]
+        self.last = [r["values"][:3] for r in recs]
+        self.mag = [math.sqrt(sum(v * v for v in r["values"][:3])) for r in recs]
+        self.prefix = [0.0]
+        for x in self.mag:
+            self.prefix.append(self.prefix[-1] + x)
+        self._dq = collections.deque()
+        self._hi = 0
+        self._t = None
+
     def window(self, t0, t1):
-        return self.recs[bisect.bisect_left(self.ts, t0):bisect.bisect_right(self.ts, t1)]
+        i, j = bisect.bisect_left(self.ts, t0), bisect.bisect_right(self.ts, t1)
+        if i >= j:
+            return None, i, j
+        if self._t is not None and t1 >= self._t:  # sliding maximum, amortized O(1)
+            while self._hi < j:
+                while self._dq and self.mag[self._dq[-1]] <= self.mag[self._hi]:
+                    self._dq.pop()
+                self._dq.append(self._hi)
+                self._hi += 1
+            while self._dq and self._dq[0] < i:
+                self._dq.popleft()
+            mx = self.mag[self._dq[0]] if self._dq else max(self.mag[i:j])
+        else:
+            self._dq.clear()
+            self._hi = i
+            mx = max(self.mag[i:j])
+        self._t = t1
+        return {"samples": j - i, "mean_magnitude": (self.prefix[j] - self.prefix[i]) / (j - i),
+                "max_magnitude": mx, "last": self.last[j - 1]}, i, j
+
+
+def _lerp_lon(a, b, f):
+    d = b - a
+    if d > 180:
+        d -= 360
+    elif d < -180:
+        d += 360
+    x = a + d * f
+    return (x + 180) % 360 - 180
 
 
 class Session:
@@ -364,24 +494,33 @@ class Session:
             by.setdefault(r["type"], []).append(r)
         self.by = by
         self.series = {k: Series(v) for k, v in by.items()}
-        self.motion = {}
+        motion = {}
         for r in by.get("MOTION_SAMPLE", []):
-            self.motion.setdefault(r["sensor"], []).append(r)
-        self.motion = {k: Series(v) for k, v in self.motion.items()}
-        self.uids = {}
-        for r in by.get("UID_MAPPING", []):
-            self.uids[r["uid"]] = r
-        self.flows = {}
+            motion.setdefault(r["sensor"], []).append(r)
+        self.motion = {k: MotionSeries(v) for k, v in motion.items()}
+        self.uids = {r["uid"]: r for r in by.get("UID_MAPPING", [])}
+        flows = {}
         for r in by.get("FLOW_MAPPING", []):
-            key = (r["ipver"], r["proto"], r["local"], r["lport"], r["remote"], r["rport"])
-            self.flows.setdefault(key, []).append(r)
-        for v in self.flows.values():
+            key = (r["ipver"], r["proto"], ipaddress.ip_address(r["local"]).packed, r["lport"],
+                   ipaddress.ip_address(r["remote"]).packed, r["rport"])
+            flows.setdefault(key, []).append(r)
+        self.flows = {}
+        for k, v in flows.items():
             v.sort(key=lambda r: r["first_seen_ns"])
-        self.cell_identity = Series(by.get("CELL_IDENTITY", []))
+            self.flows[k] = ([r["first_seen_ns"] for r in v], v)
+        self._unmapped = {}  # key -> start of a generation that has no FLOW_MAPPING
+        self._last_seen = {}
+        self.cell_identity = self.series.get("CELL_IDENTITY", Series([]))
 
-    def boot_ns(self, pkt):
+    def packets(self):
+        if isinstance(self.pcap, Pcap):
+            return iter(self.pcap)
+        return ((p["index"], p["ts_ns"], p["dir"], p["cap_len"], p["orig_len"], p["ip"]) for p in self.pcap["packets"])
+
+    def boot_ns(self, pkt_ts):
         """Exact inverse of the native PCAP timestamp conversion."""
-        return pkt["ts_ns"] - self.meta["anchor_real_ns"] + self.meta["anchor_boot_ns"]
+        ts = pkt_ts["ts_ns"] if isinstance(pkt_ts, dict) else pkt_ts
+        return ts - self.meta["anchor_real_ns"] + self.meta["anchor_boot_ns"]
 
     def to_boot(self, epoch_ns):
         return epoch_ns - self.meta["anchor_real_ns"] + self.meta["anchor_boot_ns"]
@@ -389,65 +528,70 @@ class Session:
     def to_epoch(self, boot_ns):
         return boot_ns - self.meta["anchor_boot_ns"] + self.meta["anchor_real_ns"]
 
-    def flow_for(self, pkt, t):
-        ip = decode_ip(pkt["ip"])
-        if ip["proto"] not in (6, 17) or ip["sport"] is None:
-            return ip, None
-        if pkt["dir"] == "uplink":
-            key = (ip["ipver"], ip["proto"], ip["src"], ip["sport"], ip["dst"], ip["dport"])
-        else:
-            key = (ip["ipver"], ip["proto"], ip["dst"], ip["dport"], ip["src"], ip["sport"])
-        cands = self.flows.get(key)
-        if not cands:
-            return ip, None
-        best = None
-        for f in cands:  # latest generation that started at or before this packet
-            if f["first_seen_ns"] <= t:
-                best = f
-            else:
-                break
-        return ip, best
+    def reset_flow_state(self):
+        self._unmapped.clear()
+        self._last_seen.clear()
 
-    def _age_ms(self, rec, t, key="ts_ns"):
-        return None if rec is None else round((t - rec[key]) / 1e6, 3)
+    def flow_for(self, direction, ip, t, syn=False):
+        """FLOW_MAPPING for a packet: same 5-tuple, latest first_seen <= t. A new connection
+        on a reused 5-tuple without its own mapping (client [syn], or UDP after the idle
+        expiry) is reported unknown instead of inheriting the previous connection's app.
+        Calls must come in capture order (after [reset_flow_state])."""
+        v, src, dst, proto, sport, dport, l4 = ip
+        if proto not in (6, 17) or sport is None:
+            return None
+        key = (v, proto, src, sport, dst, dport) if direction == "uplink" else (v, proto, dst, dport, src, sport)
+        starts, maps = self.flows.get(key, ((), ()))
+        i = bisect.bisect_right(starts, t) - 1
+        best = maps[i] if i >= 0 else None
+        prev = self._last_seen.get(key)
+        self._last_seen[key] = t
+        new_gen = prev is None
+        if proto == 17 and prev is not None and t - prev > UDP_IDLE_NS:
+            new_gen = True
+        if syn:
+            new_gen = True
+        if new_gen and (best is None or best["first_seen_ns"] != t):
+            self._unmapped[key] = t
+        unmapped = self._unmapped.get(key)
+        if unmapped is not None and (best is None or best["first_seen_ns"] < unmapped):
+            return None
+        return best
+
+    def _age_ms(self, rec, t):
+        return None if rec is None else round((t - rec["ts_ns"]) / 1e6, 3)
 
     def location_at(self, t):
         s = self.series.get("LOCATION")
         if not s:
             return {"status": "no_data"}
         a, b = s.around(t)
-        if a is not None and b is not None and b["ts_ns"] - a["ts_ns"] <= self.max_gap and b["ts_ns"] > a["ts_ns"]:
+        if a is not None and b is not None and 0 < b["ts_ns"] - a["ts_ns"] <= self.max_gap:
             f = (t - a["ts_ns"]) / (b["ts_ns"] - a["ts_ns"])
-            lat = a["lat"] + (b["lat"] - a["lat"]) * f
-            lon = a["lon"] + (b["lon"] - a["lon"]) * f
-            alt = None if a["alt_m"] is None or b["alt_m"] is None else a["alt_m"] + (b["alt_m"] - a["alt_m"]) * f
-            return {"status": "interpolated", "lat": lat, "lon": lon, "alt_m": alt,
-                    "h_acc_m": max(x for x in (a["h_acc_m"], b["h_acc_m"]) if x is not None)
-                    if a["h_acc_m"] is not None or b["h_acc_m"] is not None else None,
-                    "speed_mps": a["speed_mps"], "bearing_deg": a["bearing_deg"],
+            accs = [x for x in (a["h_acc_m"], b["h_acc_m"]) if x is not None]
+            return {"status": "interpolated", "lat": a["lat"] + (b["lat"] - a["lat"]) * f,
+                    "lon": _lerp_lon(a["lon"], b["lon"], f),
+                    "alt_m": None if a["alt_m"] is None or b["alt_m"] is None else a["alt_m"] + (b["alt_m"] - a["alt_m"]) * f,
+                    "h_acc_m": max(accs) if accs else None, "speed_mps": a["speed_mps"], "bearing_deg": a["bearing_deg"],
                     "fix_age_ms": self._age_ms(a, t), "next_fix_in_ms": round((b["ts_ns"] - t) / 1e6, 3)}
         if a is None:
             return {"status": "before_first_fix"}
-        age = t - a["ts_ns"]
-        return {"status": "stale" if age > self.max_gap else "latest", "lat": a["lat"], "lon": a["lon"],
+        return {"status": "stale" if t - a["ts_ns"] > self.max_gap else "latest", "lat": a["lat"], "lon": a["lon"],
                 "alt_m": a["alt_m"], "h_acc_m": a["h_acc_m"], "speed_mps": a["speed_mps"],
                 "bearing_deg": a["bearing_deg"], "fix_age_ms": self._age_ms(a, t)}
 
     def motion_at(self, t):
         out = {}
         for sensor in ("accelerometer", "linear_acceleration", "gyroscope"):
-            s = self.motion.get(sensor)
-            if not s:
+            ms = self.motion.get(sensor)
+            if ms is None:
                 continue
-            w = s.window(t - self.motion_win, t)
-            if not w:
-                last = s.latest(t)
+            w, i, _ = ms.window(t - self.motion_win, t)
+            if w is None:
                 out[sensor] = {"status": "no_samples_in_window",
-                               "last_sample_age_ms": self._age_ms(last, t)}
-                continue
-            mags = [math.sqrt(sum(v * v for v in r["values"][:3])) for r in w]
-            out[sensor] = {"samples": len(w), "mean_magnitude": sum(mags) / len(mags), "max_magnitude": max(mags),
-                           "last": w[-1]["values"][:3]}
+                               "last_sample_age_ms": round((t - ms.ts[i - 1]) / 1e6, 3) if i > 0 else None}
+            else:
+                out[sensor] = w
         return out
 
     def _sample(self, kind, t):
@@ -455,9 +599,25 @@ class Session:
         r = s.latest(t) if s else None
         if r is None:
             return None
-        ts = r["ts_ns"]
-        age = t - ts
+        age = t - r["ts_ns"]
         return r, round(age / 1e6, 3), age > self.stale
+
+    def _state(self, kind, t):
+        s = self.series.get(kind)
+        return s.latest(t) if s else None
+
+    def serving_signal(self, t):
+        """Serving-cell signal from the freshest of SIGNAL_STRENGTH and CELL_MEASUREMENT,
+        with the age and stale flag of that same record."""
+        best = None
+        for kind in ("SIGNAL_STRENGTH", "CELL_MEASUREMENT"):
+            got = self._sample(kind, t)
+            if got is None:
+                continue
+            cell = next((c for c in got[0]["cells"] if c["registered"]), None)
+            if cell is not None and (best is None or got[1] < best[1]):
+                best = (cell, got[1], got[2], got[0])
+        return best
 
     def context_at(self, t):
         ctx = {"boot_ns": t, "time_utc": iso(self.to_epoch(t))}
@@ -469,7 +629,7 @@ class Session:
             ctx[key] = None if got is None else {"cells": got[0]["cells"], "age_ms": got[1], "stale": got[2]}
         for kind, key in (("RADIO_STATE", "radio_state"), ("NETWORK_STATE", "network"), ("WIFI_STATE", "wifi"),
                           ("GNSS_STATUS", "gnss")):
-            r = self.series[kind].latest(t) if kind in self.series else None
+            r = self._state(kind, t)
             if r is None:
                 ctx[key] = None
             else:
@@ -479,58 +639,91 @@ class Session:
         ctx["motion"] = self.motion_at(t)
         return ctx
 
-    def timeline(self):
-        rows = []
-        for p in self.pcap["packets"]:
-            t = self.boot_ns(p)
-            ip, flow = self.flow_for(p, t)
+    # Record kinds whose "latest before t" value feeds a timeline row. Between two consecutive
+    # timestamps of these kinds those values cannot change, so they are computed once per
+    # interval; only ages, staleness, interpolation, motion windows and apps vary per packet.
+    _STATE_KINDS = ("CELL_IDENTITY", "SIGNAL_STRENGTH", "CELL_MEASUREMENT", "RADIO_STATE", "NETWORK_STATE",
+                    "WIFI_STATE", "LOCATION")
+
+    def _static_columns(self, t):
+        ci = self.cell_identity.latest(t)
+        serving = next((c for c in (ci["cells"] if ci else ()) if c["registered"]), None)
+        sig = self.serving_signal(t)
+        meas = self._sample("CELL_MEASUREMENT", t)
+        radio = self._state("RADIO_STATE", t)
+        net = self._state("NETWORK_STATE", t)
+        wifi = self._state("WIFI_STATE", t)
+        cell = sig[0] if sig else {}
+        cols = {
+            "transport": "|".join(net["transports"]) if net else "",
+            "data_rat": _nz(radio["data_network_type"]) if radio else "",
+            "rat_override": _nz(radio["override"]) if radio else "",
+            "serving_rat": serving["rat"] if serving else "",
+            "serving_pci": _nz(serving["pci"]) if serving else "",
+            "serving_arfcn": _nz(serving["arfcn"]) if serving else "",
+            "serving_cid": _nz(serving["cid"]) if serving else "",
+            "rsrp_dbm": _first(cell, "rsrp", "ss_rsrp", "rscp", "rssi"),
+            "rsrq_db": _first(cell, "rsrq", "ss_rsrq", "ecno"),
+            "sinr_db": _first(cell, "rssnr", "ss_sinr"),
+            "neighbor_cells": sum(1 for c in meas[0]["cells"] if not c["registered"]) if meas else "",
+            "wifi_rssi_dbm": _nz(wifi["rssi_dbm"]) if wifi else "",
+        }
+        return cols, (sig[3]["ts_ns"] if sig else None)
+
+    def iter_timeline(self):
+        """One row per packet, streamed in capture order."""
+        self.reset_flow_state()
+        bounds = sorted({ts for k in self._STATE_KINDS if k in self.series for ts in self.series[k].ts})
+        lo = hi = None  # current interval [lo, hi) of constant static columns
+        static, sig_ts = {}, None
+        sec, sec_txt = None, ""
+        for idx, ts, direction, cap_len, orig_len, data in self.packets():
+            t = self.boot_ns(ts)
+            if lo is None or not lo <= t < hi:
+                i = bisect.bisect_right(bounds, t)
+                lo = bounds[i - 1] if i > 0 else -(1 << 63)
+                hi = bounds[i] if i < len(bounds) else 1 << 63
+                static, sig_ts = self._static_columns(t)
+            ip = parse_ip(data)
+            v, src, dst, proto, sport, dport, l4 = ip
+            flow = self.flow_for(direction, ip, t, client_syn(direction, ip, data))
             uid = flow["uid"] if flow else None
             app = self.uids.get(uid) if uid is not None else None
             loc = self.location_at(t)
-            ci = self.cell_identity.latest(t)
-            serving = next((c for c in (ci["cells"] if ci else []) if c["registered"]), None)
-            sig = self._sample("SIGNAL_STRENGTH", t)
-            meas = self._sample("CELL_MEASUREMENT", t)
-            srv_meas = None
-            if meas:
-                srv_meas = next((c for c in meas[0]["cells"] if c["registered"]), None)
-            srv_sig = sig[0]["cells"][0] if sig and sig[0]["cells"] else None
-            radio = self.series["RADIO_STATE"].latest(t) if "RADIO_STATE" in self.series else None
-            net = self.series["NETWORK_STATE"].latest(t) if "NETWORK_STATE" in self.series else None
-            wifi = self.series["WIFI_STATE"].latest(t) if "WIFI_STATE" in self.series else None
-            mot = self.motion_at(t)
+            mot = self.motion_at(t) if self.motion else {}
             acc = mot.get("linear_acceleration") or mot.get("accelerometer") or {}
             gyr = mot.get("gyroscope") or {}
-            sigsrc = srv_sig or srv_meas or {}
-            rows.append({
-                "packet": p["index"] + 1, "time_utc": iso(p["ts_ns"]), "boot_ns": t, "direction": p["dir"],
-                "orig_len": p["orig_len"], "cap_len": p["cap_len"],
-                "src": ip["src"], "dst": ip["dst"], "proto": {6: "tcp", 17: "udp", 1: "icmp", 58: "icmpv6"}.get(ip["proto"], ip["proto"] or ""),
-                "sport": ip["sport"] if ip["sport"] is not None else "", "dport": ip["dport"] if ip["dport"] is not None else "",
-                "flow_id": flow["flow_id"] if flow else "", "uid": "" if uid is None else uid,
+            if ts // 1_000_000_000 != sec:
+                sec = ts // 1_000_000_000
+                sec_txt = datetime.datetime.fromtimestamp(sec, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            row = {
+                "packet": idx + 1, "time_utc": "%s.%09dZ" % (sec_txt, ts % 1_000_000_000), "boot_ns": t,
+                "direction": direction, "orig_len": orig_len, "cap_len": cap_len,
+                "src": addr(src) if src else "", "dst": addr(dst) if dst else "",
+                "proto": PROTO_NAMES.get(proto, proto if proto is not None else ""),
+                "sport": _nz(sport), "dport": _nz(dport),
+                "flow_id": flow["flow_id"] if flow else "", "uid": _nz(uid),
                 "app_status": ("resolved" if uid is not None else flow["resolution"] if flow
-                               else "no_flow_mapping" if ip["sport"] is not None else "not_tcp_udp"),
+                               else "no_flow_mapping" if sport is not None else "not_tcp_udp"),
                 "packages": "|".join(app["packages"]) if app else "", "app_class": app["class"] if app else "",
-                "transport": "|".join(net["transports"]) if net else "",
-                "data_rat": radio["data_network_type"] if radio and radio["data_network_type"] is not None else "",
-                "rat_override": radio["override"] if radio and radio["override"] is not None else "",
-                "serving_rat": serving["rat"] if serving else "", "serving_pci": serving["pci"] if serving and serving["pci"] is not None else "",
-                "serving_arfcn": serving["arfcn"] if serving and serving["arfcn"] is not None else "",
-                "serving_cid": serving["cid"] if serving and serving["cid"] is not None else "",
-                "rsrp_dbm": _first(sigsrc, "rsrp", "ss_rsrp", "rscp", "rssi"),
-                "rsrq_db": _first(sigsrc, "rsrq", "ss_rsrq", "ecno"),
-                "sinr_db": _first(sigsrc, "rssnr", "ss_sinr"),
-                "signal_age_ms": (sig or meas or (None, ""))[1] if (sig or meas) else "",
-                "signal_stale": (sig or meas)[2] if (sig or meas) else "",
-                "neighbor_cells": sum(1 for c in meas[0]["cells"] if not c["registered"]) if meas else "",
-                "wifi_rssi_dbm": wifi["rssi_dbm"] if wifi and wifi["rssi_dbm"] is not None else "",
-                "lat": loc.get("lat", ""), "lon": loc.get("lon", ""), "alt_m": _nz(loc.get("alt_m")),
-                "h_acc_m": _nz(loc.get("h_acc_m")), "speed_mps": _nz(loc.get("speed_mps")),
-                "location_status": loc["status"], "fix_age_ms": _nz(loc.get("fix_age_ms")),
-                "acc_mean_mps2": _nz(acc.get("mean_magnitude")), "acc_max_mps2": _nz(acc.get("max_magnitude")),
-                "gyro_mean_rads": _nz(gyr.get("mean_magnitude")),
-            })
-        return rows
+            }
+            row.update(static)
+            row["signal_age_ms"] = round((t - sig_ts) / 1e6, 3) if sig_ts is not None else ""
+            row["signal_stale"] = (t - sig_ts > self.stale) if sig_ts is not None else ""
+            row["lat"] = _nz(loc.get("lat"))
+            row["lon"] = _nz(loc.get("lon"))
+            row["alt_m"] = _nz(loc.get("alt_m"))
+            row["h_acc_m"] = _nz(loc.get("h_acc_m"))
+            row["speed_mps"] = _nz(loc.get("speed_mps"))
+            row["location_status"] = loc["status"]
+            row["fix_age_ms"] = _nz(loc.get("fix_age_ms"))
+            row["acc_mean_mps2"] = _nz(acc.get("mean_magnitude"))
+            row["acc_max_mps2"] = _nz(acc.get("max_magnitude"))
+            row["gyro_mean_rads"] = _nz(gyr.get("mean_magnitude"))
+            yield row
+
+    def timeline(self):
+        return list(self.iter_timeline())
 
 
 def _first(d, *keys):
@@ -564,6 +757,12 @@ def parse_time(s, session):
 
 # ---------------------------------------------------------------- validation / summary / export
 
+def _packets_of(pcap):
+    if isinstance(pcap, Pcap):
+        return iter(pcap)
+    return ((p["index"], p["ts_ns"], p["dir"], p["cap_len"], p["orig_len"], p["ip"]) for p in pcap["packets"])
+
+
 def validate(pcap, meta, pcap_path=None):
     errs, warns = [], []
     recs = meta["records"]
@@ -578,14 +777,6 @@ def validate(pcap, meta, pcap_path=None):
         errs.append("expected exactly one SESSION_END as the last record (found %d)" % len(ends))
     if meta["truncated_bytes"]:
         errs.append("meta has %d trailing bytes after the last complete record" % meta["truncated_bytes"])
-    if pcap["truncated_bytes"]:
-        errs.append("pcap has %d trailing bytes after the last complete record" % pcap["truncated_bytes"])
-    prev = None
-    for p in pcap["packets"]:
-        if prev is not None and p["ts_ns"] < prev:
-            warns.append("packet %d timestamp earlier than previous" % (p["index"] + 1))
-            break
-        prev = p["ts_ns"]
     seen = set()
     for r in recs:
         if r["type"] == "FLOW_MAPPING":
@@ -594,68 +785,68 @@ def validate(pcap, meta, pcap_path=None):
             seen.add(r["flow_id"])
         if r["type"].startswith("TYPE_"):
             warns.append("unknown record type %s skipped" % r["type"])
-    # Every TCP/UDP record must contain its complete transport header (the logger never
-    # cuts inside headers, whatever the configured length).
-    short = 0
-    for p in pcap["packets"]:
-        ip = decode_ip(p["ip"])
-        if ip["proto"] in (6, 17) and ip["sport"] is not None:
-            need = transport_end(p["ip"])
-            if need is not None and p["cap_len"] < min(need, p["orig_len"]):
-                short += 1
+    # Every TCP/UDP record must contain its complete transport header (the logger never cuts
+    # inside headers, whatever the configured length); timestamps must not go backwards much.
+    short, n, prev, backwards = 0, 0, None, 0
+    for _, ts, _, cap_len, orig_len, data in _packets_of(pcap):
+        n += 1
+        if prev is not None and ts < prev:
+            backwards += 1
+        prev = ts
+        need = transport_end(data)
+        if need is not None and cap_len < min(need, orig_len):
+            short += 1
+    tb = pcap.truncated_bytes if isinstance(pcap, Pcap) else pcap["truncated_bytes"]
+    bad = pcap.bad_record if isinstance(pcap, Pcap) else pcap.get("bad_record")
+    if bad:
+        errs.append("pcap: " + bad)
+    elif tb:
+        errs.append("pcap has %d trailing bytes after the last complete record" % tb)
     if short:
         errs.append("%d TCP/UDP records end inside their transport header" % short)
-    return errs, warns
+    if backwards:
+        warns.append("%d packet timestamps earlier than the previous packet" % backwards)
+    return errs, warns, n
 
 
-def transport_end(data):
-    """Offset just past the TCP/UDP header, or None if it cannot be determined."""
-    v = data[0] >> 4 if data else 0
-    if v == 4 and len(data) >= 20:
-        l4, proto = (data[0] & 15) * 4, data[9]
-    elif v == 6 and len(data) >= 40:
-        l4, proto = 40, data[6]
-        while proto in (0, 43, 60, 44) and l4 + 8 <= len(data):
-            proto, l4 = data[l4], l4 + (8 if proto == 44 else (data[l4 + 1] + 1) * 8)
-    else:
-        return None
-    if proto == 17:
-        return l4 + 8
-    if proto == 6 and l4 + 13 <= len(data):
-        return l4 + max(20, (data[l4 + 12] >> 4) * 4)
-    return None
-
-
-def summary(pcap, meta):
-    s = Session(pcap, meta)
-    counts = {}
-    for r in meta["records"]:
-        counts[r["type"]] = counts.get(r["type"], 0) + 1
-    rows = s.timeline()
-    attributed = sum(1 for r in rows if r["uid"] != "")
-    pk = pcap["packets"]
+def summary(session):
+    s, meta = session, session.meta
+    counts = collections.Counter(r["type"] for r in meta["records"])
+    n = up = attributed = 0
+    first = last = None
+    s.reset_flow_state()
+    for idx, ts, direction, cap_len, orig_len, data in s.packets():
+        n += 1
+        up += direction == "uplink"
+        first = ts if first is None else first
+        last = ts
+        ip = parse_ip(data)
+        f = s.flow_for(direction, ip, s.boot_ns(ts), client_syn(direction, ip, data))
+        attributed += bool(f and f["uid"] is not None)
     end = next((r for r in meta["records"] if r["type"] == "SESSION_END"), None)
+    stats = s.by.get("CAPTURE_STATS", [])
+    counters = end["counters"] if end and end["counters"] else (stats[-1]["counters"] if stats else None)
+    drops = None if counters is None else counters.get("capture_queue_drops_ul", 0) + counters.get("capture_queue_drops_dl", 0)
     status = {}
     for r in s.by.get("SENSOR_STATUS", []):
         status[r["source"]] = r["status"] + (" (%s)" % r["detail"] if r["detail"] else "")
     return {
         "session_id": meta["session_id"], "meta_version": meta["version"],
-        "packets": len(pk), "uplink": sum(1 for p in pk if p["dir"] == "uplink"),
-        "downlink": sum(1 for p in pk if p["dir"] == "downlink"),
-        "first_packet_utc": iso(pk[0]["ts_ns"]) if pk else None, "last_packet_utc": iso(pk[-1]["ts_ns"]) if pk else None,
-        "packets_with_app": attributed, "flows": len(s.by.get("FLOW_MAPPING", [])),
+        "packets": n, "uplink": up, "downlink": n - up,
+        "first_packet_utc": iso(first) if first is not None else None, "last_packet_utc": iso(last) if last is not None else None,
+        "packets_with_app": attributed, "flows": counts.get("FLOW_MAPPING", 0),
         "apps": {str(u): "|".join(r["packages"]) for u, r in sorted(s.uids.items())},
-        "metadata_records": counts, "sources": status,
+        "metadata_records": dict(counts), "sources": status,
         "metadata_dropped": sum(r["dropped"] for r in s.by.get("DROPPED_EVENTS", [])),
         "end": None if end is None else {"status": end["status"], "reason": end["reason"]},
-        "capture_queue_drops": None if end is None else
-        end["counters"].get("capture_queue_drops_ul", 0) + end["counters"].get("capture_queue_drops_dl", 0),
+        "capture_queue_drops": drops,
+        "capture_queue_drops_source": None if counters is None else ("SESSION_END" if end and end["counters"] else "last CAPTURE_STATS"),
     }
 
 
-def export_pcapng(pcap, meta, out_path):
+def export_pcapng(session, out_path):
     """Enriched copy: raw IP packets, epb_flags direction, and a comment with app and radio context."""
-    s = Session(pcap, meta)
+    s = session
 
     def opt(code, val):
         return struct.pack("<HH", code, len(val)) + val + b"\0" * (-len(val) % 4)
@@ -664,14 +855,17 @@ def export_pcapng(pcap, meta, out_path):
         return struct.pack("<II", btype, 12 + len(body)) + body + struct.pack("<I", 12 + len(body))
 
     info = s.by.get("SESSION_INFO", [{}])[0]
+    ip_snaplen = s.pcap.ip_snaplen if isinstance(s.pcap, Pcap) else s.pcap["ip_snaplen"]
     shb = block(0x0A0D0D0A, struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1)
                 + opt(2, ("%s %s" % (info.get("device_manufacturer", ""), info.get("device_model", ""))).encode())
                 + opt(3, ("Android %s" % info.get("android_release", "")).encode())
-                + opt(4, ("mpcanalyze export of %s" % meta["session_id"]).encode()) + opt(0, b""))
-    idb = block(1, struct.pack("<HHI", 101, 0, pcap["ip_snaplen"]) + opt(2, b"tun0") + opt(9, b"\x09") + opt(0, b""))
+                + opt(4, ("mpcanalyze export of %s" % s.meta["session_id"]).encode()) + opt(0, b""))
+    idb = block(1, struct.pack("<HHI", 101, 0, ip_snaplen) + opt(2, b"tun0") + opt(9, b"\x09") + opt(0, b""))
+    n = 0
     with open(out_path, "wb") as f:
         f.write(shb + idb)
-        for p, row in zip(pcap["packets"], s.timeline()):
+        rows = s.iter_timeline()
+        for (_, ts, direction, cap_len, orig_len, data), row in zip(s.packets(), rows):
             parts = []
             if row["uid"] != "":
                 parts.append("app=%s" % (row["packages"] or row["uid"]))
@@ -682,75 +876,78 @@ def export_pcapng(pcap, meta, out_path):
             if row["lat"] != "":
                 parts.append("pos=%.6f,%.6f" % (row["lat"], row["lon"]))
             comment = ";".join(parts).encode()
-            ts = p["ts_ns"]
-            data = p["ip"] + b"\0" * (-len(p["ip"]) % 4)
-            opts = (opt(1, comment) if comment else b"") + opt(2, struct.pack("<I", 2 if p["dir"] == "uplink" else 1)) + opt(0, b"")
-            f.write(block(6, struct.pack("<IIIII", 0, ts >> 32, ts & 0xFFFFFFFF, p["cap_len"], p["orig_len"]) + data + opts))
-    return len(pcap["packets"])
+            payload = bytes(data) + b"\0" * (-cap_len % 4)
+            opts = (opt(1, comment) if comment else b"") + opt(2, struct.pack("<I", 2 if direction == "uplink" else 1)) + opt(0, b"")
+            f.write(block(6, struct.pack("<IIIII", 0, ts >> 32, ts & 0xFFFFFFFF, cap_len, orig_len) + payload + opts))
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------- CLI
 
-def _opt(argv, name, default):
-    if name in argv:
-        return float(argv[argv.index(name) + 1])
-    return default
-
-
 def main(argv):
-    if len(argv) < 3:
-        print(__doc__)
-        return 2
-    cmd = argv[1]
+    ap = argparse.ArgumentParser(prog="mpcanalyze", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n", 1)[1])
+    ap.add_argument("command", choices=["validate", "dump", "summary", "timeline", "context-at", "export-pcapng"])
+    ap.add_argument("files", nargs="+")
+    ap.add_argument("--type", default=None)
+    ap.add_argument("--csv", action="store_true")
+    ap.add_argument("--max-location-gap", type=float, default=5.0)
+    ap.add_argument("--motion-window", type=float, default=1000)
+    ap.add_argument("--stale-after", type=float, default=10.0)
+    a = ap.parse_args(argv[1:])
+    need = {"dump": 1, "validate": 2, "summary": 2, "timeline": 2, "context-at": 3, "export-pcapng": 3}[a.command]
+    if len(a.files) != need:
+        ap.error("%s takes %d file/argument(s)" % (a.command, need))
     try:
-        if cmd == "dump":
-            meta = read_meta(argv[2], strict=False)
-            want = argv[argv.index("--type") + 1] if "--type" in argv else None
-            hdr = {k: v for k, v in meta.items() if k != "records"}
-            print(json.dumps({"header": hdr}))
+        if a.command == "dump":
+            meta = read_meta(a.files[0], strict=False)
+            print(json.dumps({"header": {k: v for k, v in meta.items() if k != "records"}}))
             for r in meta["records"]:
-                if want is None or r["type"] == want:
+                if a.type is None or r["type"] == a.type:
                     print(json.dumps(r, default=str))
             return 0
-        pcap, meta = read_pcap(argv[2]), read_meta(argv[3])
-        if cmd == "validate":
-            errs, warns = validate(pcap, meta, argv[2])
+        pcap, meta = Pcap(a.files[0]), read_meta(a.files[1])
+        if a.command == "validate":
+            errs, warns, n = validate(pcap, meta, a.files[0])
             for w in warns:
                 print("WARN:", w)
             for e in errs:
                 print("FAIL:", e)
-            print(json.dumps({"ok": not errs, "packets": len(pcap["packets"]), "records": len(meta["records"]),
-                              "session_id": meta["session_id"]}))
+            print(json.dumps({"ok": not errs, "packets": n, "records": len(meta["records"]), "session_id": meta["session_id"]}))
             return 1 if errs else 0
-        if cmd == "summary":
-            print(json.dumps(summary(pcap, meta), indent=1))
-            return 0
-        s = Session(pcap, meta, _opt(argv, "--max-location-gap", 5.0), _opt(argv, "--motion-window", 1000),
-                    _opt(argv, "--stale-after", 10.0))
-        if cmd == "timeline":
-            rows = s.timeline()
-            if "--csv" in argv:
+        s = Session(pcap, meta, a.max_location_gap, a.motion_window, a.stale_after)
+        if a.command == "summary":
+            print(json.dumps(summary(s), indent=1))
+        elif a.command == "timeline":
+            rows = s.iter_timeline()
+            if a.csv:
                 import csv
-                if rows:
-                    w = csv.DictWriter(sys.stdout, fieldnames=list(rows[0].keys()))
+                first = next(rows, None)
+                if first is not None:
+                    w = csv.DictWriter(sys.stdout, fieldnames=list(first.keys()))
                     w.writeheader()
-                    w.writerows(rows)
+                    w.writerow(first)
+                    for r in rows:
+                        w.writerow(r)
             else:
                 for r in rows:
-                    print(json.dumps(r))
-            return 0
-        if cmd == "context-at":
-            print(json.dumps(s.context_at(parse_time(argv[4], s)), indent=1, default=str))
-            return 0
-        if cmd == "export-pcapng":
-            n = export_pcapng(pcap, meta, argv[4])
-            print("wrote %d packets to %s" % (n, argv[4]))
-            return 0
+                    sys.stdout.write(json.dumps(r) + "\n")
+        elif a.command == "context-at":
+            try:
+                t = parse_time(a.files[2], s)
+            except ValueError:
+                ap.error("time must be epoch seconds, ISO 8601 or boot:<ns>")
+            print(json.dumps(s.context_at(t), indent=1, default=str))
+        elif a.command == "export-pcapng":
+            print("wrote %d packets to %s" % (export_pcapng(s, a.files[2]), a.files[2]))
+        return 0
     except FormatError as e:
-        print("FORMAT ERROR:", e)
+        print("FORMAT ERROR:", e, file=sys.stderr)
         return 1
-    print(__doc__)
-    return 2
+    except OSError as e:
+        print("ERROR:", e, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

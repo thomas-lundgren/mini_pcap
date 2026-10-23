@@ -1,5 +1,7 @@
 package dev.minipcap.storage
 
+import dev.minipcap.session.Sessions
+
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Context
@@ -23,7 +25,7 @@ class CaptureFileProvider : ContentProvider() {
         val name = uri.lastPathSegment ?: throw FileNotFoundException()
         if ('/' in name || name.startsWith(".") || SHAREABLE.none { name.endsWith(it) })
             throw FileNotFoundException("not shareable")
-        val f = File(capturesDir(context!!), name)
+        val f = File(Sessions.dir(context!!), name)
         if (!f.isFile) throw FileNotFoundException()
         return f
     }
@@ -56,7 +58,6 @@ class CaptureFileProvider : ContentProvider() {
         const val AUTHORITY = "dev.minipcap.files"
         /** Finalized artifacts only (current and legacy formats); never .partial or state files. */
         private val SHAREABLE = listOf(".pcap", ".meta", ".pcapng", ".meta.json")
-        fun capturesDir(ctx: Context) = File(ctx.filesDir, "captures")
         fun uriFor(f: File): Uri = Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(f.name).build()
     }
 }

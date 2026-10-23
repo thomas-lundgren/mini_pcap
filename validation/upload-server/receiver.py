@@ -343,7 +343,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def check_meta(path, cid):
-    """Binary metadata (docs/META_FORMAT.md): header, session id, framing, final SESSION_END complete."""
+    """Binary metadata: header, session id, framing, final SESSION_END complete. The shared
+    contract is docs/META_FORMAT.md; this is an independent (deliberately minimal) reader."""
     size = os.path.getsize(path)
     with open(path, "rb") as f:
         hdr = f.read(64)
@@ -352,6 +353,8 @@ def check_meta(path, cid):
         if str(uuid.UUID(bytes=hdr[16:32])) != cid:
             raise HttpError(422, "metadata session id does not match capture_id")
         off = struct.unpack_from("<I", hdr, 12)[0]
+        if off < 64 or off > size:
+            raise HttpError(422, "metadata header length is invalid")
         f.seek(off)
         last_type, last_status = None, None
         while off < size:

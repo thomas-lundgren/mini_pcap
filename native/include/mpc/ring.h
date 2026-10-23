@@ -15,7 +15,6 @@ typedef struct {
     uint32_t slot_size;
     uint32_t nslots; /* power of two */
     uint32_t mask;
-    _Atomic uint64_t peak_used; /* producer-maintained high watermark */
 } mpc_ring;
 
 /* slot_size is rounded up to 8 bytes; nslots is rounded down to a power of two
@@ -38,9 +37,6 @@ static inline void mpc_ring_commit(mpc_ring *r)
 {
     uint64_t h = atomic_load_explicit(&r->head, memory_order_relaxed) + 1;
     atomic_store_explicit(&r->head, h, memory_order_release);
-    uint64_t used = h - r->tail_cache;
-    if (used > atomic_load_explicit(&r->peak_used, memory_order_relaxed))
-        atomic_store_explicit(&r->peak_used, used, memory_order_relaxed);
 }
 
 /* Consumer side: number of committed slots available. */

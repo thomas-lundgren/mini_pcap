@@ -35,7 +35,7 @@ def load(d):
     runs = {}
     for f in glob.glob(os.path.join(d, "?-*-run*.json")):
         name = os.path.basename(f)
-        if "sidecar" in name or "stall" in name:
+        if "counters" in name or "stall" in name:
             continue
         r = json.load(open(f))
         runs.setdefault((r["workload"]["name"], r["variant"]), []).append(r)
@@ -118,11 +118,11 @@ def main():
             p("| %s | " % LABEL[v] + " | ".join("%.0f" % (med([r["app_threads_cpu_ms"].get(n, 0) for r in rs]) or 0) for n in names) + " |")
     p("")
     # Sidecar counters (drops/written) per variant.
-    p("## Native counters per variant run (from sidecars)")
+    p("## Native counters per variant run (from SESSION_END counters)")
     p("")
     p("| file | pkts_ul | pkts_dl | records_written | queue drops | ring peak slots/slots | write syscalls | flows | uid requests | uid applied |")
     p("|---|---|---|---|---|---|---|---|---|---|")
-    for f in sorted(glob.glob(os.path.join(d, "?-sidecar-run*.json"))):
+    for f in sorted(glob.glob(os.path.join(d, "?-counters-run*.json"))):
         try:
             c = json.load(open(f)).get("native_counters", {})
         except ValueError:

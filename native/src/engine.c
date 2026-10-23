@@ -63,7 +63,7 @@ unsigned int lwip_port_rand(void)
 
 /* ------------------------------------------------------------------ types */
 
-enum { EV_TUN = 1, EV_TIMER, EV_CTL, EV_UIDRESP, EV_TCP, EV_UDP };
+enum { EV_TUN = 1, EV_TIMER, EV_CTL, EV_TCP, EV_UDP };
 
 typedef struct {
     int type;
@@ -111,8 +111,10 @@ struct mpc_session {
     uint32_t n_conns, n_sessions;
     struct pbuf *spare; /* pre-allocated pbuf for the next TUN read */
     uint8_t relay_buf[RELAY_BUF];
-    ev_tag tun_tag, timer_tag, ctl_tag, uid_tag;
+    uint8_t tx_buf[65536]; /* flattens pbuf chains too long for one writev (rare) */
+    ev_tag tun_tag, timer_tag, ctl_tag;
     uint32_t ticks;
+    int gateway_started; /* lwip_init() ran: gateway_fini() must undo it, even after a partial init */
     pthread_mutex_t stop_lock;
 };
 
@@ -177,9 +179,18 @@ static err_t tun_output(struct netif *netif, struct pbuf *p)
 {
     mpc_session *s = netif->state;
     if (s->tap) {
+        /* The parser needs the headers contiguous. lwIP may put only the IP header in the
+         * first pbuf (e.g. IP fragmentation), so copy up to MPC_HDR_MAX bytes if needed. */
+        const uint8_t *hdr = p->payload;
+        size_t hdr_len = p->len;
+        uint8_t flat[MPC_HDR_MAX];
+        if (p->next && p->len < MPC_HDR_MAX && p->len < p->tot_len) {
+            hdr_len = pbuf_copy_partial(p, flat, (u16_t)(p->tot_len < MPC_HDR_MAX ? p->tot_len : MPC_HDR_MAX), 0);
+            hdr = flat;
+        }
         uint32_t cl;
-        uint8_t *slot = mpc_capture_begin(s->cap, MPC_DIR_DOWNLINK, mpc_now_boottime_ns(),
-                                          p->payload, p->len, p->tot_len, &cl);
+        uint8_t *slot = mpc_capture_begin(s->cap, MPC_DIR_DOWNLINK, mpc_now_boottime_ns(), hdr, hdr_len,
+                                          p->tot_len, &cl);
         if (slot) {
             pbuf_copy_partial(p, slot, (u16_t)cl, 0);
             mpc_capture_commit(s->cap);
@@ -191,9 +202,15 @@ static err_t tun_output(struct netif *netif, struct pbuf *p)
     } else {
         struct iovec iov[32];
         int n = 0;
-        for (struct pbuf *q = p; q && n < 32; q = q->next)
+        struct pbuf *q = p;
+        for (; q && n < 32; q = q->next)
             iov[n++] = (struct iovec){q->payload, q->len};
-        w = writev(s->tun_fd, iov, n);
+        if (q == NULL) {
+            w = writev(s->tun_fd, iov, n);
+        } else { /* more than 32 segments: one copy instead of a truncated packet */
+            u16_t len = pbuf_copy_partial(p, s->tx_buf, p->tot_len, 0);
+            w = write(s->tun_fd, s->tx_buf, len);
+        }
     }
     if (w < 0)
         MPC_CINC(&s->cap->cnt, tun_write_errors, 1);
@@ -769,6 +786,7 @@ static void free_deferred(mpc_session *s)
 static int gateway_init(mpc_session *s)
 {
     lwip_init();
+    s->gateway_started = 1;
     ip4_addr_t addr4, mask, gw;
     ip6_addr_t addr6;
     if (!netif_add_noaddr(&s->netif, s, netif_init_cb, ip_input))
@@ -882,9 +900,6 @@ static void *engine_main(void *arg)
                 break;
             case EV_CTL:
                 break;
-            case EV_UIDRESP:
-                mpc_capture_apply_uids(s->cap);
-                break;
             case EV_TCP:
                 handle_tcp_event(s, tag->ptr, evs[i].events);
                 break;
@@ -942,11 +957,9 @@ mpc_session *mpc_session_start(int tun_fd, const mpc_capture_config *cfg, int *e
     s->tun_tag = (ev_tag){EV_TUN, s};
     s->timer_tag = (ev_tag){EV_TIMER, s};
     s->ctl_tag = (ev_tag){EV_CTL, s};
-    s->uid_tag = (ev_tag){EV_UIDRESP, s};
     ep_add(s, tun_fd, EPOLLIN, &s->tun_tag);
     ep_add(s, s->timer_fd, EPOLLIN, &s->timer_tag);
     ep_add(s, s->ctl_fd, EPOLLIN, &s->ctl_tag);
-    ep_add(s, s->cap->uid_resp_efd, EPOLLIN, &s->uid_tag);
     if (gateway_init(s) != 0) {
         *err = ENOMEM;
         goto fail;
@@ -960,7 +973,7 @@ mpc_session *mpc_session_start(int tun_fd, const mpc_capture_config *cfg, int *e
 fail_errno:
     *err = errno ? errno : EIO;
 fail:
-    if (s->tcp_listener || s->udp_listener)
+    if (s->gateway_started)
         gateway_fini(s);
     if (s->cap) {
         mpc_capture_finish(s->cap);

@@ -9,7 +9,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 
-/** Constants and codecs of the `<session>.meta` binary sidecar (docs/META_FORMAT.md, v1.0). */
+/** Constants and codecs of the `<session>.meta` binary metadata file (docs/META_FORMAT.md, v1.0). */
 object MetaFormat {
     val MAGIC = byteArrayOf('M'.code.toByte(), 'P'.code.toByte(), 'C'.code.toByte(), 'M'.code.toByte(),
         'E'.code.toByte(), 'T'.code.toByte(), 'A'.code.toByte(), 0)
@@ -60,6 +60,8 @@ object MetaFormat {
     const val DROP_QUEUE_FULL = 1
     const val DROP_TOO_LARGE = 2
     const val DROP_WRITE_ERROR = 3
+    const val DROP_ENCODE_ERROR = 4
+    const val DROP_CLOSED = 5 // emitted after close(): counted, cannot be written
 
     // SENSOR_STATUS sources and states
     const val SRC_LOCATION = 1
@@ -143,7 +145,7 @@ object MetaFormat {
         val validBytes: Long,
         val truncatedBytes: Long,
         val records: Long,
-        val endStatus: Int?, // status of the last SESSION_END, null if none
+        val endStatus: Int?, // status of SESSION_END if it is the final record, else null
     ) {
         val headerOk get() = sessionId != null
     }
@@ -156,7 +158,7 @@ object MetaFormat {
         if (!hdr.copyOf(8).contentEquals(MAGIC) || h.getShort(8).toInt() != VERSION_MAJOR)
             return Scan(null, 0, 0, 0, size, 0, null)
         val hlen = h.getInt(12)
-        if (hlen < HEADER_BYTES) return Scan(null, 0, 0, 0, size, 0, null)
+        if (hlen < HEADER_BYTES || hlen > size) return Scan(null, 0, 0, 0, size, 0, null)
         val id = ByteBuffer.wrap(hdr, 16, 16).order(ByteOrder.BIG_ENDIAN).let { UUID(it.long, it.long) }
         skipFully(inp, (hlen - HEADER_BYTES).toLong())
         var off = hlen.toLong()
@@ -172,10 +174,12 @@ object MetaFormat {
             if (type == SESSION_END && len >= RECORD_HEADER_BYTES + 1) {
                 val st = inp.read()
                 if (st < 0) break
-                end = st
                 if (!skipFully(inp, len - RECORD_HEADER_BYTES - 1)) break
+                end = st
             } else if (!skipFully(inp, len - RECORD_HEADER_BYTES)) {
                 break
+            } else {
+                end = null // a record after SESSION_END: the session end is not final
             }
             off += len
             records++

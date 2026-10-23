@@ -90,15 +90,52 @@ class MetaWriterTest {
     }
 
     @Test
-    fun oversizedRecordIsDroppedNotCorrupting() {
+    fun oversizedRecordsUseALargeBufferUpToTheLimit() {
         val f = File(dir, "d.meta")
         val w = writer(f)
-        val huge = (0 until 2000).associate { "key_$it" to "value_$it" }
-        assertTrue(!MetaRecords.sessionInfo(w, t(0), huge))
-        MetaRecords.sessionEnd(w, t(1), MetaFormat.END_COMPLETE, "x", emptyMap())
-        w.close()
+        val big = (0 until 2000).associate { "key_$it" to "value_$it" } // ~40 KB > 4 KB pooled buffer
+        assertTrue(MetaRecords.sessionInfo(w, t(0), big))
+        val huge = (0 until 60_000).associate { "key_$it" to "value_value_$it" } // > 1 MB
+        assertTrue(!MetaRecords.captureStats(w, t(1), huge.mapValues { 1L }))
+        MetaRecords.sessionEnd(w, t(2), MetaFormat.END_COMPLETE, "x", emptyMap())
+        assertTrue(w.close())
         assertEquals(1L, w.droppedTotal)
-        assertEquals(MetaFormat.END_COMPLETE, MetaFormat.scan(f).endStatus)
+        val s = MetaFormat.scan(f)
+        assertEquals(MetaFormat.END_COMPLETE, s.endStatus)
+        assertEquals(3L, s.records) // SESSION_INFO, DROPPED_EVENTS, SESSION_END
+    }
+
+    @Test
+    fun sessionEndIsAlwaysTheLastRecord() {
+        val f = File(dir, "e.meta")
+        val w = writer(f, pool = 2)
+        val v = floatArrayOf(1f, 2f, 3f)
+        repeat(5_000) { MetaRecords.motion(w, t(it.toLong()), MetaFormat.SENSOR_ACCEL, 3, v, 3) } // drops pending
+        assertTrue(MetaRecords.sessionEnd(w, t(9_000), MetaFormat.END_COMPLETE, "user_stop", emptyMap()))
+        repeat(10) { MetaRecords.motion(w, t(10_000L + it), MetaFormat.SENSOR_ACCEL, 3, v, 3) } // after the end
+        assertTrue(w.close())
+        assertEquals(MetaFormat.END_COMPLETE, MetaFormat.scan(f).endStatus) // only set when SESSION_END is last
+        assertTrue(!MetaRecords.motion(w, t(20_000), MetaFormat.SENSOR_ACCEL, 3, v, 3)) // closed: rejected, counted
+    }
+
+    @Test
+    fun encoderExceptionsNeverLeakPooledBuffers() {
+        val f = File(dir, "g.meta")
+        val w = writer(f, pool = 4)
+        repeat(100) { assertTrue(!w.emit(MetaFormat.FLOW_MAPPING, 0, t(it.toLong())) { b -> b.put(ByteArray(8), 0, 40) }) }
+        assertTrue(MetaRecords.clockSync(w, t(200), real0, MetaFormat.CLOCK_PERIODIC)) // pool still usable
+        assertEquals(100L, w.droppedTotal)
+        MetaRecords.sessionEnd(w, t(300), MetaFormat.END_COMPLETE, "x", emptyMap())
+        assertTrue(w.close())
+    }
+
+    @Test
+    fun closeReportsAnIncompleteFile() {
+        val f = File(dir, "h.meta")
+        val w = writer(f)
+        MetaRecords.sessionInfo(w, t(0), mapOf("k" to "v"))
+        assertTrue(!w.close()) // no SESSION_END: not a complete file
+        assertNull(MetaFormat.scan(f).endStatus)
     }
 
     // ------------------------------------------------------------------ cross-check with the Python analyzer

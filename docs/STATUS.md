@@ -1,4 +1,4 @@
-# Project Status — Android Lightweight PCAPNG Logger
+# Project Status — MiniPcap (Android packet logger with asynchronous metadata)
 
 **Updated:** 2026-10-23
 **Milestone:** M0–M6 implemented and device-tested on one phone; P0/P1 measured; M7/P2 partially (soak only)
@@ -11,19 +11,20 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
 |---|---|---|
 | M0 Bootstrap + harness | DONE | Gradle/NDK build (`./gradlew assembleDebug testDebugUnitTest`), host native build, `bench.py`/`nettool`; no CI configured (local only) |
 | M1 Forwarding + UID + P0 | DONE (1 device) | lwIP fork BSD-3 + socket relay (ADR-005); VPN VALIDATED; TCP/UDP/DNS/QUIC/IPv4/IPv6; UID 113/122 flows first lookup; P0 table in TEST_RESULTS §5. Gap: cellular, handover, 2nd device |
-| M2 Native PCAPNG + sidecar | DONE | `check_native.sh`: fixtures byte-checked, independent Python parser + tshark agree; `flow_uid_map` join |
+| M2 Native packet writer + metadata | DONE (format replaced by ADR-014) | `check_native.sh`: PCAP (SLL) fixtures checked by the analyzer reader and tshark; metadata format cross-checked Kotlin → Python |
 | M3 Native pipeline + P1 | DONE (P1 agent verdict PASS, review pending) | tap 0 allocs; stall 5 s → 0.04 % app loss, drops counted; logging ≈ +3–5 % process CPU vs B |
 | M4 App filter UI | DONE (basic) | All/Include/Exclude, searchable picker (launcher apps), snaplen; V07 verified with shell UID. Gap: two real third-party apps |
 | M5 Notification + Stop | DONE except tap test | systemExempted FGS, 1 Hz text, session-scoped Stop intent, idempotent stop (V09, V17), force-stop recovery (V11). Gap: physical tap on notification action, permission-denied, VPN revoke |
 | M6 Upload | DONE | receiver + 14 tests; Kotlin↔Python cross test; device upload SHA-256 identical, replay 200, 409, 401 preflight, refused while recording |
 | USB offload (ADR-012) | DONE (1 device) | finalized pairs moved to `Download/MiniPcap` with read-back SHA-256 check; force-stop mid-move recovered; upload from moved files. Gap: UI delete, MTP, API 29–32 |
+| ADR-015 layered structure + review hardening | DONE (host) | 4 sub-agent reviews, fixes + tests; coverage matrix docs/TEST_COVERAGE.md |
 | ADR-014 PCAP (SLL) + binary `.meta` + analyzer | IMPLEMENTED, host-tested (phases 1–4) | direction in SLL, header floor (≥ IP + transport header), asynchronous collectors (GPS, motion, radio, network, apps), `mpcanalyze.py`. **Phase 5 (device + performance): NOT TESTED** |
 | M7 / P2 | PARTIAL | 60-min soak PASS (23.6M records, 0 drops, bounded memory); no energy, thermal-stress, snaplen sweep, cellular, second API level, security review |
 
 ## Verified accomplishments (this session)
-- Native data plane: `native/src/{engine,capture,flow,ring,pcapng,packet,jni}.c`; host tests 5/5 suites.
-- Android app (Kotlin, no AndroidX): VPN service, UID resolver, package registry, sidecar + checkpoints,
-  recovery, FileProvider share, settings with Keystore-encrypted token, JobScheduler/UIDT upload, UI.
+- Native data plane: `native/src/{engine,capture,flow,ring,pcap,packet,jni}.c`; host tests 6/6 suites.
+- Android app (Kotlin, no AndroidX), layered packages (ADR-015): capture session lifecycle, metadata
+  writer + collectors, flow-owner worker, recovery, move to Downloads, Keystore token, UIDT upload, UI.
 - Reference receiver `validation/upload-server/receiver.py` (stdlib, TLS, idempotent, transactional).
 - Performance harness and two benchmark runs (first superseded, see NOTE.md there).
 - Fixed defects found by device testing: tagged-pointer handle treated as error (native session leak on
@@ -50,7 +51,10 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
       second Android version (API 29–33 path for upload jobs).
 - [ ] Perfetto/simpleperf profile of `mpc-engine` before any forwarding optimization.
 - [ ] Coordinator sign-off on provisional P2 budgets using TEST_RESULTS §5.
-- [ ] ADR-014 on device (phase 5): Wi-Fi + cellular walk with GPS/radio/motion on; check SLL direction
+- [ ] **AGENTS.md needs the owner's update**: its Mission/rules still describe per-packet EPB
+      comments `u-<uid>;f-<id>`, `flow_uid_map` and a JSON sidecar (superseded by ADR-014).
+- [ ] Host test gap: downlink IP-fragmented (chained pbuf) packets through the engine.
+- [ ] ADR-014 on device (phase 5): run `validation/scripts/device_meta_check.py`; Wi-Fi + cellular walk with GPS/radio/motion on; check SLL direction
       in Wireshark, every record type in `mpcanalyze.py dump`, cell refresh rates, NSA override,
       permission-denied paths, FGS location type on Android 17; motion modes and rates; rerun P1 + soak
       (writer cost, `.meta` growth and drops at 50/200 Hz motion, battery).

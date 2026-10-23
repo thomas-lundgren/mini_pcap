@@ -187,6 +187,44 @@ Format: Date · State · Problem · Options · Evidence · Decision · Consequen
   `UploadIntegrationTest` (Kotlin client ↔ Python receiver v2); receiver 14/14. Device:
   **NOT TESTED** (phone not connected).
 
+## ADR-015: Layered package structure and review hardening
+- Date: 2026-10-23 · State: **accepted** · after four independent sub-agent reviews (native path,
+  Kotlin metadata path, format/storage/upload consistency, architecture)
+- Decision (structure): one acyclic dependency graph (checked by script, see TEST_RESULTS):
+  - `core` (CaptureFile, AtomicFiles; pure JVM), `capture` (NativeCore, CaptureConfig, PcapFormat),
+    `meta` (MetaFormat, MetaRecords, MetaWriter; pure JVM), `notify` (notification builders) — no deps
+  - `meta.apps` (UidResolver, PackageRegistry, ClassRules) → capture, meta;
+    `meta.collect` (one file per collector, CellInfoMapper, MotionFilter, MeasurementConfig) → meta
+  - `session` (SessionStore + SessionFormat, Sessions = process registry/locks/recovery,
+    CaptureSession = one recording's lifecycle, MetaSession) → capture, core, meta.*
+  - `storage` (export to Downloads) → session; `upload` → session, storage; `service`
+    (thin VPN/FGS shell) → session, storage, notify; `ui` (MainActivity, DebugCommands, SessionList) on top
+- Decision (native): the UID feedback path (resolution ring, eventfd, apply on the forwarding
+  thread, per-record uid/flow_id) is removed: attribution is FLOW_MAPPING only. Record header
+  16 B (was 32). Flow announcements retried when the queue was full. Ring peak measured by the
+  consumer. MTU validated (576–65535). Records counted written only once on disk; mid-capture
+  storage failures counted exactly. Chained downlink pbufs parsed from a contiguous copy;
+  > 32-segment writes flattened instead of truncated. Writer idle wake 100 ms (was 20 ms).
+  IPv6 AH walked. CLOCK_SYNC pairs from native clock_gettime (ns).
+- Decision (metadata writer): oversized records use a one-off 1 MiB buffer; any encoder
+  exception returns the pooled buffer; close waits for in-flight producers; SESSION_END is
+  always the last record (drop report first, nothing after); the first write error latches and
+  truncates to the last complete record; `close()`/`finish()` report completeness and a
+  session is COMPLETE only if they succeed. Clock is a constructor parameter.
+- Decision (lifecycle): one teardown order for Stop and start failure (collectors → native stop
+  → flow worker join → app lookups end → metadata end); failed starts discard their files;
+  metadata file committed before the packet file (rollback on failure); recovery off the main
+  thread with buffered scans; recovery treats a complete SESSION_END as COMPLETE.
+- Decision (collectors): every telephony listener registered separately and its failure
+  classified (permission vs error); cell refresh default 10 s (was 2 s); Wi-Fi polled only while
+  Wi-Fi is the default network; sentinels never recorded; GNSS ≤ 1 Hz strictly; satellite
+  counts for fused fixes; benchmark variants D/E run no measurement collectors.
+- Decision (analyzer): PCAP streamed from mmap (flat memory); timeline is a generator with
+  per-interval caching of state columns; motion statistics via prefix sums and a sliding
+  maximum; a new connection without its own FLOW_MAPPING is unknown, not inherited; signal
+  age comes from the record that supplied the value; argparse CLI.
+- Evidence: TEST_RESULTS "ADR-015"; coverage matrix in docs/TEST_COVERAGE.md.
+
 ### Pending decisions
 - Provisional P2 budgets (coordinator sign-off after reviewing P0/P1 numbers in `docs/TEST_RESULTS.md`).
 - Whether recovered captures may be uploaded (would need protocol support for `status: recovered`).

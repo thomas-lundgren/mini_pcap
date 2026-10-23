@@ -15,7 +15,7 @@ data class UploadServerConfig(val baseUrl: String, val wifiOnly: Boolean, val ha
 /**
  * Upload server settings. The bearer token is encrypted with a non-exportable
  * AndroidKeyStore AES-GCM key; only ciphertext is stored in preferences. The token
- * is never logged, exported, or written into captures/sidecars.
+ * is never logged, exported, or written into capture or metadata files.
  */
 class UploadSettings(private val ctx: Context) {
     private val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

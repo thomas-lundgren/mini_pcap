@@ -1,7 +1,7 @@
-# Upload Protocol — Version 1 (proposed client/receiver contract)
+# Upload Protocol — Version 2 (client/receiver contract)
 
 **State:** v2 implemented (Android client + reference receiver), host-tested — see `docs/TEST_RESULTS.md`. v2 differs from v1 only in the file pair: `<id>.pcap` (Linux SLL) + binary `<id>.meta` ([`META_FORMAT.md`](META_FORMAT.md)) instead of PCAPNG + JSON sidecar (ADR-014).  
-**Target:** Configurable HTTPS server for user-triggered upload of complete Android PCAPNG captures.  
+**Target:** Configurable HTTPS server for user-triggered upload of complete recording sessions (packet file + metadata file).  
 **MVP policy:** Upload only after logging has stopped and both artifacts are finalized. No automatic upload.
 
 ## Endpoints (illustrative — implement matching client + reference receiver)
@@ -53,7 +53,7 @@ Example manifest:
 
 1. Authenticate request and apply server-side body size/retention/quota limits. Validate allowed capture ID, file names and declared sizes. Never trust incoming filenames as filesystem paths.
 2. Stream file parts to a staging directory under the receiver's control with bounded memory; reject unexpected fields, duplicate parts, invalid lengths and oversized payloads.
-3. Verify computed SHA-256 for both parts, that metadata `capture_id` and `capture_file` agree with the manifest, and that metadata `status` is `complete`. (Additional PCAPNG structural validation is recommended.)
+3. Verify computed SHA-256 for both parts against the manifest. Validate the capture: PCAP magic and link type `LINKTYPE_LINUX_SLL` (113). Validate the metadata file (META_FORMAT v1): magic, major version, header length, session ID equal to `capture_id`, record framing up to the end of the file, and a final `SESSION_END` record with status complete (a recovered or unterminated session is rejected with `422`).
 4. Resolve `Idempotency-Key`: if same capture exists with identical hashes, return the existing receipt (`200`). If identity exists with conflicting hashes, reject with `409`, never overwrite silently.
 5. Only after both files validate, promote the pair into one visible dataset and commit the server-side registry transaction. Orphans in staging remain invisible and may be garbage-collected.
 6. Return receipt *only* after committed storage succeeds. Expose limits and retention policy; operator chooses physical storage, authentication rotation, TLS terminator and backups.
@@ -75,7 +75,7 @@ Example manifest:
 }
 ```
 
-Client verifies the response capture ID and both returned digest values against locally computed digests. A successful HTTP status alone is insufficient. Persist receipt and upload attempt state in a local record **separate from** the capture sidecar.
+Client verifies the response capture ID and both returned digest values against locally computed digests. A successful HTTP status alone is insufficient. Persist receipt and upload attempt state in a local record **separate from** the capture files.
 
 ## Android UI and scheduling
 

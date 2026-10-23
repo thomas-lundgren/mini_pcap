@@ -1,7 +1,7 @@
 package dev.minipcap.upload
 
-import dev.minipcap.storage.CaptureFile
-import dev.minipcap.storage.PrivateFile
+import dev.minipcap.core.CaptureFile
+import dev.minipcap.core.PrivateFile
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException

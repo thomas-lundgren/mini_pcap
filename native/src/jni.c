@@ -1,10 +1,11 @@
 /* JNI bridge. Called only at session start/stop, for ~1 Hz counter snapshots and
- * for batched UID request/resolution exchange through direct ByteBuffers.
+ * clock pairs, and for batched new-flow announcements through a direct ByteBuffer.
  * Nothing here runs per packet. */
 #include <errno.h>
 #include <jni.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <android/log.h>
@@ -15,7 +16,7 @@
 
 typedef struct {
     mpc_session *s;
-    char *strs[5];
+    char *pcap_path;
 } handle_t;
 
 static char *dup_jstring(JNIEnv *env, jstring js)
@@ -42,37 +43,28 @@ JNIEXPORT jobjectArray JNICALL Java_dev_minipcap_capture_NativeCore_nativeCounte
     return arr;
 }
 
-JNIEXPORT jlong JNICALL Java_dev_minipcap_capture_NativeCore_nativeStart(
-    JNIEnv *env, jclass cls, jint tun_fd, jstring pcap_path, jint snaplen, jint mtu, jint variant,
-    jint ring_bytes, jstring userappl, jstring os, jstring hardware)
+JNIEXPORT jlong JNICALL Java_dev_minipcap_capture_NativeCore_nativeStart(JNIEnv *env, jclass cls, jint tun_fd,
+                                                                         jstring pcap_path, jint snaplen,
+                                                                         jint mtu, jint variant, jint ring_bytes)
 {
     handle_t *h = calloc(1, sizeof(*h));
     if (!h) {
         close(tun_fd);
         return -ENOMEM;
     }
-    h->strs[0] = dup_jstring(env, pcap_path);
-    h->strs[1] = dup_jstring(env, userappl);
-    h->strs[2] = dup_jstring(env, os);
-    h->strs[3] = dup_jstring(env, hardware);
-    h->strs[4] = strdup("tun0");
+    h->pcap_path = dup_jstring(env, pcap_path);
     mpc_capture_config cfg = {
-        .pcap_path = h->strs[0],
-        .snaplen = (uint32_t)snaplen,
+        .pcap_path = h->pcap_path,
+        .snaplen = (uint32_t)snaplen, /* -1 -> MPC_SNAPLEN_HEADERS */
         .mtu = (uint32_t)mtu,
         .variant = variant,
         .ring_bytes = (size_t)ring_bytes,
-        .if_name = h->strs[4],
-        .userappl = h->strs[1],
-        .os = h->strs[2],
-        .hardware = h->strs[3],
     };
     int err = 0;
     h->s = mpc_session_start(tun_fd, &cfg, &err);
     if (!h->s) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "session start failed: %d", err);
-        for (int i = 0; i < 5; i++)
-            free(h->strs[i]);
+        free(h->pcap_path);
         free(h);
         return -(err ? err : EIO);
     }
@@ -93,8 +85,7 @@ JNIEXPORT void JNICALL Java_dev_minipcap_capture_NativeCore_nativeDestroy(JNIEnv
     if (!h)
         return;
     mpc_session_destroy(h->s);
-    for (int i = 0; i < 5; i++)
-        free(h->strs[i]);
+    free(h->pcap_path);
     free(h);
 }
 
@@ -128,16 +119,20 @@ JNIEXPORT jint JNICALL Java_dev_minipcap_capture_NativeCore_nativeUidPoll(JNIEnv
     return mpc_capture_uid_poll(mpc_session_capture(h->s), p, max, timeout_ms);
 }
 
-JNIEXPORT jint JNICALL Java_dev_minipcap_capture_NativeCore_nativeUidDeliver(JNIEnv *env, jclass cls,
-                                                                              jlong handle,
-                                                                              jobject buf, jint n)
+/* CLOCK_BOOTTIME and CLOCK_REALTIME read back to back (ns): CLOCK_SYNC records. */
+JNIEXPORT void JNICALL Java_dev_minipcap_capture_NativeCore_nativeClockPair(JNIEnv *env, jclass cls,
+                                                                            jlongArray out)
 {
-    handle_t *h = (handle_t *)(intptr_t)handle;
-    void *p = (*env)->GetDirectBufferAddress(env, buf);
-    jlong cap = (*env)->GetDirectBufferCapacity(env, buf);
-    if (!h || !p || (jlong)n * (jlong)sizeof(mpc_uid_resolution) > cap)
-        return -1;
-    return mpc_capture_uid_deliver(mpc_session_capture(h->s), p, n);
+    struct timespec b0, r, b1;
+    clock_gettime(CLOCK_BOOTTIME, &b0);
+    clock_gettime(CLOCK_REALTIME, &r);
+    clock_gettime(CLOCK_BOOTTIME, &b1);
+    jlong v[2];
+    int64_t n0 = (int64_t)b0.tv_sec * 1000000000LL + b0.tv_nsec;
+    int64_t n1 = (int64_t)b1.tv_sec * 1000000000LL + b1.tv_nsec;
+    v[0] = n0 + (n1 - n0) / 2;
+    v[1] = (int64_t)r.tv_sec * 1000000000LL + r.tv_nsec;
+    (*env)->SetLongArrayRegion(env, out, 0, 2, v);
 }
 
 JNIEXPORT void JNICALL Java_dev_minipcap_capture_NativeCore_nativeWriterStall(JNIEnv *env, jclass cls,
@@ -151,5 +146,5 @@ JNIEXPORT void JNICALL Java_dev_minipcap_capture_NativeCore_nativeWriterStall(JN
 JNIEXPORT jint JNICALL Java_dev_minipcap_capture_NativeCore_nativeRecordSizes(JNIEnv *env, jclass cls)
 {
     /* Lets Kotlin assert the ByteBuffer record layout at runtime. */
-    return (jint)((sizeof(mpc_uid_request) << 16) | sizeof(mpc_uid_resolution));
+    return (jint)sizeof(mpc_uid_request);
 }

@@ -25,7 +25,7 @@ Command: `./validation/scripts/check_native.sh`
 | Python independent parser | `pcapng_tool.py check-fixture`: every record's direction, lengths, flow ID, UID, µs timestamp; retrospective join of flow 1's first two packets via `flow_uid_map` | OK |
 | tshark cross-check | `frame.packet_flags_direction` (0x2 UL / 0x1 DL), `frame.len`/`cap_len`, `frame.comment`, `frame.time_epoch` ±1.5 µs for all 12 records; `capinfos` reads Raw IP, µs resolution, snaplen 64 | OK |
 
-## 2. JVM unit tests — PASS (29/29, 2026-10-23 after ADR-014)
+## 2. JVM unit tests — PASS (37/37, 2026-10-23 after ADR-015)
 
 Command: `./gradlew testDebugUnitTest`
 
@@ -159,6 +159,23 @@ cached tail) — it reached capacity without any drop.
   B/C/D/E data on one workload set). Incremental logging cost ≈ +3–5 % process CPU vs B at 2k–5k pps and
   ~110–180 Mbit/s TCP, throughput/RTT changes within run-to-run spread. Provisional P2 budgets still need sign-off.
 - No "minimal overhead" claim is made: independent review and P2 (energy, thermal, cellular, snaplen sweep) are open.
+
+## ADR-015 review hardening + coverage (2026-10-23)
+
+Four read-only sub-agent reviews (native path; Kotlin metadata path; format/storage/upload
+consistency; architecture). Format contract: no mismatch found between spec, Kotlin encoder,
+analyzer and receiver. Findings fixed and covered by new tests:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Native gate `check_native.sh` | PASS | 6 suites incl. new `test_packet` (hdr_len, IPv6 ext chain with AH, fragments, truncation); `test_capture`: ring peak ≤ real backlog (was ≈ ring size), **flow announcement retry 5000/5000 after 904 queue overflows**, **mid-capture storage failure (RLIMIT_FSIZE): 409 written + 4591 dropped = 5000 offered, nothing counted that is not on disk**, header floor, stall, 0 allocations; reader + tshark 12/12 |
+| Native performance `bench_capture` (host, 2 M packets, mixed TCP/QUIC/ACK) | report | tap 70.6 / 81.8 / 79.4 / 89.5 ns per packet (headers / 128 / 256 / full); headers-only 74 B per record, 3.98 M records/s end to end; at 256/full the flat-out producer (14 M pps) exceeds the writer and drops are counted (records + drops = offered) |
+| JVM `testDebugUnitTest` | PASS 37/37 | new: `MetaWriterPerfTest` (**1.51 B allocated per motion record**, 1.63 M records/s), `MotionFilterTest` (found and fixed: MAX_RATE ran 11 % fast), `MetaWriterTest` (oversized record via 1 MiB buffer, > 1 MiB dropped and counted, SESSION_END always last, encoder exceptions do not leak buffers, close reports incomplete files) |
+| Receiver `test_receiver.py` | PASS 14/14 | plus header-length check |
+| Analyzer `test_mpcanalyze.py` | PASS 14/14 | interpolation never across gaps, out-of-order records, staleness, flow generations, unmapped generation not inherited, motion window, serving cell changes, truncated meta, unknown types/trailing fields, header-floor validation (fixed: cut before the TCP data-offset byte was missed), bad inputs, CLI time formats, export. Scaling: **~62–69 k packets/s** with flat memory (was 16.5 k, ~1.5 KB RSS per packet) |
+| Package dependency graph | acyclic | script over `import dev.minipcap.*`: layers core/capture/meta/notify → meta.apps/meta.collect → session → storage → upload/service → ui |
+| Lint | 0 errors | (fixed one NewApi error in the API 30 display-info path) |
+| Device | **NOT TESTED** | phone not connected; `validation/scripts/device_meta_check.py` added for the acceptance run |
 
 ## ADR-014 PCAP (SLL) + binary metadata (2026-10-23)
 

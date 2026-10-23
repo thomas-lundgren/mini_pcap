@@ -67,12 +67,12 @@ static void test_normalize_and_generation(void)
     CHECK(e && is_new && e->flow_id == 1);
     e = mpc_flow_lookup(&t, &kd, 0x12, MPC_DIR_DOWNLINK, 100, &is_new);
     CHECK(e && !is_new && e->flow_id == 1);
-    e->uid = 10234;
+    e->uid_state = MPC_UID_STATE_REQUESTED;
     /* FIN then a new SYN on the same tuple -> new generation, UID reset. */
     e = mpc_flow_lookup(&t, &ku, 0x11, MPC_DIR_UPLINK, 101, &is_new);
     CHECK(e && !is_new && (e->flags & MPC_FLOWF_FIN));
     e = mpc_flow_lookup(&t, &ku, 0x02, MPC_DIR_UPLINK, 102, &is_new);
-    CHECK(e && is_new && e->flow_id == 2 && e->uid == MPC_UID_UNKNOWN);
+    CHECK(e && is_new && e->flow_id == 2 && e->uid_state == MPC_UID_STATE_NONE); /* new generation: lookup again */
     /* SYN retransmission on a live flow is not a new generation. */
     e = mpc_flow_lookup(&t, &ku, 0x02, MPC_DIR_UPLINK, 103, &is_new);
     CHECK(e && !is_new && e->flow_id == 2);

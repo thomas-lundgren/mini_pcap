@@ -289,6 +289,25 @@ accept only HTTPS with system-trusted certificates.
 - **Correlation happens afterwards:** the phone only records. Interpolation, staleness and per-packet
   context are computed by the analyzer, so the files stay small and the capture path stays cheap.
 
+**Code structure.** The Kotlin code is layered, and its package dependency graph is acyclic. Each
+layer depends only on layers below it:
+
+| Layer | Packages | Depends on |
+|---|---|---|
+| 5 | `ui` | everything below |
+| 4 | `service`, `upload` | `session`, `storage`, `notify` (+ `capture`, `meta.*`, `core`) |
+| 3 | `storage` (export) | `session`, `core` |
+| 2 | `session` | `capture`, `meta`, `meta.apps`, `meta.collect`, `core` |
+| 1 | `meta.apps`, `meta.collect` | `meta` (`meta.apps` also `capture`) |
+| 0 | `core`, `capture`, `meta`, `notify` | nothing in the app |
+
+- `session/CaptureSession` owns one recording: native start, `MetaSession`, the flow-owner worker,
+  ordered teardown and finalization.
+- `service/CaptureVpnService` is only the Android shell: VPN, foreground service, notification
+  and ticker.
+- The format code (`meta/MetaFormat`, `MetaRecords`, `MetaWriter`, `capture/PcapFormat`) is pure JVM
+  and tested without a device.
+
 Design decisions and their reasons are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Performance
@@ -372,12 +391,16 @@ neither.
 
 ## Testing and benchmarks
 
-**Tests**
+**Tests** (the requirement → test map is [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md))
 
 ```bash
-./gradlew testDebugUnitTest                          # JVM tests, incl. Kotlin client ↔ Python receiver over TLS
-./validation/scripts/check_native.sh                 # native C tests + PCAPNG checked by an independent reader and tshark
+./validation/scripts/check_native.sh                 # native C tests + PCAP checked by the analyzer reader and tshark
+./native/build-host/bench_capture 2000000 /tmp       # native capture-path performance per packet-size mode
+./gradlew testDebugUnitTest                          # JVM: format, writer, recovery, export, upload, performance,
+                                                     #      Kotlin-written session decoded by the Python analyzer
 python3 -I validation/upload-server/test_receiver.py # receiver protocol tests
+python3 -I analyzer/test_mpcanalyze.py               # analyzer correlation edge cases + scaling
+python3 -I validation/scripts/device_meta_check.py --host <computer-LAN-IP>   # on the phone: acceptance check
 ```
 
 The native tests need gcc, cmake and ninja. The PCAPNG checks also use `tshark`/`capinfos`
@@ -412,8 +435,16 @@ test tokens.
 
 ```
 analyzer/                  mpcanalyze.py: reads .pcap + .meta, correlation, timeline, context-at, export
-app/                       Android app (Kotlin): VPN service, notification, UID worker, metadata
-                           writer + collectors (meta/), recovery, move to Downloads, upload, UI
+app/src/main/java/dev/minipcap/
+  core/                    files and atomic writes (pure JVM)
+  capture/                 native bridge, capture settings, PCAP format (recovery scan)
+  meta/                    metadata format, typed record encoders, non-blocking writer (pure JVM)
+  meta/collect/            one collector per source (clock, location, motion, radio, network) + settings
+  meta/apps/               flow-owner worker (FLOW_MAPPING), package lookup (UID_MAPPING), class rules
+  session/                 session store, process registry, CaptureSession lifecycle, MetaSession
+  storage/                 move to Download/MiniPcap, share provider
+  upload/                  HTTPS client, upload job, settings
+  service/                 VpnService shell;  notify/  notification builders;  ui/  activities
 native/                    C data plane: engine.c (lwIP + socket relay + tap), capture.c (flow table,
                            ring, writer), pcap.c (PCAP + SLL), packet.c, flow.c, ring.c, jni.c
   tests/                   host unit tests        tools/nettool.c   workload generator for benchmarks

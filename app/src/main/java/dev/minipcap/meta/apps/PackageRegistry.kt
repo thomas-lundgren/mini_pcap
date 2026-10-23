@@ -1,4 +1,4 @@
-package dev.minipcap.capture
+package dev.minipcap.meta.apps
 
 import android.content.pm.PackageManager
 import android.os.Process
@@ -28,13 +28,18 @@ class PackageRegistry(
     /** Called from the UID worker for every resolved UID; deduplicated, never blocks. */
     fun noteUid(uid: Int) {
         if (map.containsKey(uid)) return
-        executor.execute {
-            if (!map.containsKey(uid)) {
-                val info = resolve(uid)
-                map[uid] = info
-                runCatching { onResolved(uid, info) }
-            }
+        try {
+            executor.execute(Runnable { lookup(uid) })
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            // After shutdown (Stop): the UID was seen too late to be named in this session.
         }
+    }
+
+    private fun lookup(uid: Int) {
+        if (map.containsKey(uid)) return
+        val info = resolve(uid)
+        map[uid] = info
+        runCatching { onResolved(uid, info) }
     }
 
     fun snapshot(): Map<Int, UidInfo> = HashMap(map)

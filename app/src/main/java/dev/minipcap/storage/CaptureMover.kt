@@ -1,5 +1,12 @@
 package dev.minipcap.storage
 
+import dev.minipcap.core.AtomicFiles
+import dev.minipcap.core.CaptureFile
+import dev.minipcap.core.PrivateFile
+import dev.minipcap.session.CapturePair
+import dev.minipcap.session.SessionRecord
+import dev.minipcap.session.SessionState
+import dev.minipcap.session.SessionStore
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -7,19 +14,6 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
-
-/** One artifact of a finalized pair, either in app-private storage or moved to shared storage. */
-interface CaptureFile {
-    val name: String
-    fun length(): Long
-    fun open(): InputStream
-}
-
-class PrivateFile(val file: File) : CaptureFile {
-    override val name: String get() = file.name
-    override fun length() = file.length()
-    override fun open(): InputStream = FileInputStream(file)
-}
 
 /**
  * Shared-storage target (MediaStore Downloads on Android). Entries are created
@@ -103,7 +97,7 @@ class ExportStore(private val dir: File) {
     @Synchronized
     fun update(id: String, f: (ExportRecord) -> ExportRecord): ExportRecord {
         val r = f(get(id)).copy(updatedMs = System.currentTimeMillis())
-        SessionStore.writeAtomic(file(id), r.toJson().toString(2))
+        AtomicFiles.write(file(id), r.toJson().toString(2))
         return r
     }
 }
@@ -152,7 +146,7 @@ class CaptureMover(
         val r = sessions.get(id) ?: throw MoveException("Unknown capture")
         val before = exports.get(id).status
         if (before == ExportStatus.EXPORTED) return exports.get(id)
-        if (!eligible(r)) throw MoveException("Capture is not finalized (no PCAPNG + sidecar pair)")
+        if (!eligible(r)) throw MoveException("Capture is not finalized (no packet + metadata pair)")
         val pcap = sessions.pcapFinal(id)
         val meta = sessions.metaFinal(id)
         val total = pcap.length() + meta.length()

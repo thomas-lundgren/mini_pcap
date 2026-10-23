@@ -1,7 +1,7 @@
 /* Engine integration test on the host. A SOCK_SEQPACKET socketpair stands in
  * for the TUN device (packet boundaries preserved). The test plays the "app":
  * it injects raw IPv4 packets and checks the relayed replies from real local
- * UDP/TCP echo servers, then verifies capture counters and the PCAPNG output. */
+ * UDP/TCP echo servers, then verifies capture counters and the PCAP output. */
 #include <errno.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -215,9 +215,7 @@ int main(void)
                               .snaplen = 256,
                               .mtu = 1500,
                               .variant = MPC_VARIANT_E_UID,
-                              .ring_bytes = 1 << 20,
-                              .if_name = "tun0",
-                              .userappl = "test_engine"};
+                              .ring_bytes = 1 << 20};
     int err;
     mpc_session *s = mpc_session_start(sp[0], &cfg, &err);
     CHECK(s != NULL);

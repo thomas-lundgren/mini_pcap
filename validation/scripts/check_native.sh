@@ -5,9 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 B="$ROOT/native/build-host"
 cmake -S "$ROOT/native" -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null
-ninja -C "$B" >/dev/null
+ninja -C "$B" >/tmp/mpc-ninja.log 2>&1 || { cat /tmp/mpc-ninja.log; exit 1; }
 cd "$B"
-for t in test_pcap test_flow test_ring; do echo "== $t"; ./"$t"; done
+for t in test_pcap test_packet test_flow test_ring; do echo "== $t"; ./"$t"; done
 echo "== test_capture"; ./test_capture fixture
 echo "== test_engine"; ./test_engine | tail -1
 

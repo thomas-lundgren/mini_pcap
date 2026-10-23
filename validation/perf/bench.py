@@ -39,7 +39,7 @@ def pull(cid, ext, dest):
 
 
 def session_summary(meta_path):
-    """Final counters from the binary .meta (SESSION_END), shaped like the old JSON sidecar."""
+    """Final counters from the binary .meta (SESSION_END), shaped for the benchmark summaries."""
     m = mpcanalyze.read_meta(meta_path, strict=False)
     end = next((r for r in m["records"] if r["type"] == "SESSION_END"), None)
     c = end["counters"] if end else {}
@@ -196,7 +196,7 @@ def stop_variant(v, outdir, run):
     if not wait_vpn(False):
         raise RuntimeError("VPN did not stop for variant " + v)
     time.sleep(1.5)
-    # Keep the variant's sidecar (native counters) as raw evidence; never keep PCAPNG.
+    # Keep the variant's final counters as raw evidence; never keep packet captures.
     ids = [l.strip()[:-len(".state.json")] for l in adb("run-as", PKG, "ls", "files/captures").split() if l.endswith(".state.json")]
     newest = None
     for i in ids:
@@ -209,7 +209,7 @@ def stop_variant(v, outdir, run):
             newest = s
     if newest:
         mp = pull(newest["capture_id"], "meta", os.path.join(outdir, "%s-run%d.meta" % (v, run)))
-        with open(os.path.join(outdir, "%s-sidecar-run%d.json" % (v, run)), "w") as f:
+        with open(os.path.join(outdir, "%s-counters-run%d.json" % (v, run)), "w") as f:
             json.dump(session_summary(mp) if os.path.getsize(mp) else {}, f, indent=1)
         # Delete benchmark artifacts from the phone (keeps storage bounded).
         adb("run-as %s sh -c 'rm -f files/captures/%s.*'" % (PKG, newest["capture_id"]), check=False)
@@ -228,7 +228,7 @@ def stall_test(host, port, outdir):
         out, _ = proc.communicate(timeout=60)
         res = json.loads(out.strip().split("\n")[-1])
         stop_variant("D", outdir, 100 + stall_ms // 1000)
-        with open(os.path.join(outdir, "D-sidecar-run%d.json" % (100 + stall_ms // 1000))) as f:
+        with open(os.path.join(outdir, "D-counters-run%d.json" % (100 + stall_ms // 1000))) as f:
             meta = json.load(f)
         rec = {"stall_ms": stall_ms, "nettool": res, "native_counters": meta.get("native_counters"),
                "stats": meta.get("stats")}

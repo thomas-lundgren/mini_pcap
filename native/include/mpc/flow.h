@@ -8,8 +8,6 @@
 
 #include "mpc/packet.h"
 
-#define MPC_UID_UNKNOWN (-1)
-
 #define MPC_DIR_UPLINK 1   /* app -> network (read from TUN) */
 #define MPC_DIR_DOWNLINK 2 /* network -> app (written to TUN) */
 
@@ -23,11 +21,10 @@ typedef struct {
     uint8_t remote[16];
 } mpc_flow_key; /* 40 bytes, padding always zero so memcmp is valid */
 
+/* Owner lookup of a flow generation: requested once (retried if the request queue was full). */
 enum {
     MPC_UID_STATE_NONE = 0,
     MPC_UID_STATE_REQUESTED = 1,
-    MPC_UID_STATE_RESOLVED = 2,
-    MPC_UID_STATE_FAILED = 3,
 };
 
 #define MPC_FLOWF_FIN 0x01
@@ -35,13 +32,13 @@ enum {
 
 typedef struct {
     mpc_flow_key key;
-    uint64_t flow_id; /* 0 = empty slot */
-    int32_t uid;
-    uint32_t last_seen; /* coarse seconds (boottime_ns >> 30) */
+    uint64_t flow_id;    /* 0 = empty slot */
+    uint64_t first_seen; /* CLOCK_BOOTTIME ns of the generation's first packet */
+    uint32_t last_seen;  /* coarse seconds (boottime_ns >> 30) */
     uint8_t uid_state;
     uint8_t flags;
-    uint8_t pad[6];
-} mpc_flow_entry;
+    uint8_t pad[2];
+} mpc_flow_entry; /* 64 bytes: one cache line */
 
 typedef struct {
     mpc_flow_entry *slots;

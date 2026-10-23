@@ -3,8 +3,8 @@ package dev.minipcap.capture
 import java.nio.ByteBuffer
 
 /**
- * JNI facade for the native data plane. Every call here is lifecycle or batched
- * control: start/stop, ~1 Hz counter snapshots and batched UID exchange.
+ * JNI facade for the native packet path. Every call is lifecycle or batched control:
+ * start/stop, ~1 Hz counter snapshots and clock pairs, batched new-flow announcements.
  * No method is invoked per packet.
  */
 object NativeCore {
@@ -12,51 +12,47 @@ object NativeCore {
         System.loadLibrary("mpcnative")
     }
 
-    /** Sizes of the UID request/resolution records shared through direct buffers. */
-    const val UID_REQUEST_BYTES = 56 // flow_id u64, key[40], first_seen_ns u64
-    const val UID_RESOLUTION_BYTES = 56
+    /** New-flow announcement shared through a direct buffer: flow_id u64, key[40], first_seen_ns u64. */
+    const val FLOW_REQUEST_BYTES = 56
 
     val counterNames: List<String> by lazy { nativeCounterNames().toList() }
+    private val counterIndex: Map<String, Int> by lazy { counterNames.withIndex().associate { (i, n) -> n to i } }
 
-    fun counterIndex(name: String): Int = counterNames.indexOf(name)
+    fun counterIndex(name: String): Int = counterIndex[name] ?: -1
 
     @JvmStatic external fun nativeCounterNames(): Array<String>
 
-    /** Returns an opaque handle (tagged pointer, may be negative), or -errno in [-4095, -1]. Takes ownership of [tunFd]. */
-    @JvmStatic external fun nativeStart(
-        tunFd: Int,
-        pcapPath: String?,
-        snaplen: Int,
-        mtu: Int,
-        variant: Int,
-        ringBytes: Int,
-        userAppl: String,
-        os: String,
-        hardware: String,
-    ): Long
+    /**
+     * Starts forwarding + capture on [tunFd] (ownership passes to native code, also on failure).
+     * [snaplen]: IP bytes kept per packet, 0 = full, -1 = headers only; at least the IP +
+     * transport header is always kept. Returns an opaque handle (tagged pointer, may be
+     * negative) or -errno in [-4095, -1].
+     */
+    @JvmStatic external fun nativeStart(tunFd: Int, pcapPath: String?, snaplen: Int, mtu: Int, variant: Int, ringBytes: Int): Long
 
-    /** Ordered stop: quiesce tap, stop forwarding/close TUN, drain+fsync writer. 0 = file complete. */
+    /** Ordered stop: quiesce tap, stop forwarding/close TUN, drain + fsync the PCAP. 0 = file complete. */
     @JvmStatic external fun nativeStop(handle: Long): Int
 
     @JvmStatic external fun nativeDestroy(handle: Long)
 
     @JvmStatic external fun nativeCounters(handle: Long, out: LongArray): Int
 
-    /** Blocks up to [timeoutMs]; returns number of 56-byte requests written, or -1 once closed. */
+    /** Blocks up to [timeoutMs]; returns the number of announcements written to [buf], or -1 once closed. */
     @JvmStatic external fun nativeUidPoll(handle: Long, buf: ByteBuffer, max: Int, timeoutMs: Int): Int
-
-    @JvmStatic external fun nativeUidDeliver(handle: Long, buf: ByteBuffer, count: Int): Int
 
     /** Benchmark-only synthetic writer stall (PERFORMANCE_PLAN V32). */
     @JvmStatic external fun nativeWriterStall(handle: Long, ms: Int)
 
+    /** out[0] = CLOCK_BOOTTIME ns, out[1] = CLOCK_REALTIME ns, read back to back in native code. */
+    @JvmStatic external fun nativeClockPair(out: LongArray)
+
     @JvmStatic external fun nativeRecordSizes(): Int
+
+    fun clockPair(): LongArray = LongArray(2).also { nativeClockPair(it) }
 
     fun checkLayout() {
         val s = nativeRecordSizes()
-        check(s ushr 16 == UID_REQUEST_BYTES && (s and 0xffff) == UID_RESOLUTION_BYTES) {
-            "native UID record layout mismatch: $s"
-        }
+        check(s == FLOW_REQUEST_BYTES) { "native flow announcement layout mismatch: $s bytes" }
     }
 }
 

@@ -1,10 +1,10 @@
 package dev.minipcap
 
+import dev.minipcap.capture.PcapFormat
 import dev.minipcap.meta.MetaFormat
-import dev.minipcap.storage.PcapRecovery
-import dev.minipcap.storage.SessionRecord
-import dev.minipcap.storage.SessionState
-import dev.minipcap.storage.SessionStore
+import dev.minipcap.session.SessionFormat
+import dev.minipcap.session.SessionState
+import dev.minipcap.session.SessionStore
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -63,17 +63,17 @@ class SessionStoreTest {
         val f = dir.resolve("x.pcap")
         val good = TestCapture.pcap(5)
         f.writeBytes(good + TestCapture.record(100).copyOf(30)) // killed mid-record
-        val r = PcapRecovery.truncateToValidPrefix(f)
+        val r = PcapFormat.truncateToValidPrefix(f)
         assertEquals(good.size.toLong(), r.validBytes)
         assertEquals(30L, r.truncatedBytes)
         assertEquals(5L, r.packets)
         assertEquals(good.size.toLong(), f.length())
         // Not a PCAP at all -> nothing valid.
         f.writeBytes(ByteArray(64) { 1 })
-        assertEquals(0L, PcapRecovery.scan(f).validBytes)
+        assertEquals(0L, PcapFormat.scan(f).validBytes)
         // Header only (no packets yet) is a valid, empty capture.
         f.writeBytes(TestCapture.pcapHeader())
-        assertEquals(24L, PcapRecovery.scan(f).validBytes)
+        assertEquals(24L, PcapFormat.scan(f).validBytes)
     }
 
     @Test
@@ -91,8 +91,8 @@ class SessionStoreTest {
         assertFalse(s.pcapPartial(id).exists())
         assertFalse(s.metaPartial(id).exists())
         assertEquals("$id.pcap", s.pcapFinal(id).name)
-        assertEquals(3L, PcapRecovery.scan(s.pcapFinal(id)).packets)
-        assertEquals(0L, PcapRecovery.scan(s.pcapFinal(id)).truncatedBytes)
+        assertEquals(3L, PcapFormat.scan(s.pcapFinal(id)).packets)
+        assertEquals(0L, PcapFormat.scan(s.pcapFinal(id)).truncatedBytes)
         val meta = MetaFormat.scan(s.metaFinal(id))
         assertEquals(MetaFormat.END_RECOVERED, meta.endStatus)
         assertEquals(0L, meta.truncatedBytes)
@@ -100,7 +100,7 @@ class SessionStoreTest {
         // Recovered sessions are never "latest complete" (not uploadable as complete).
         assertNull(s.latestCompleted())
         // Idempotent: nothing more to recover.
-        assertTrue(s.recoverInterrupted(null, 9500).isEmpty())
+        assertTrue(s.recoverInterrupted(null, 9500, 1L).isEmpty())
     }
 
     @Test
@@ -115,7 +115,7 @@ class SessionStoreTest {
         // Killed after both files were finalized but before the COMPLETE state commit.
         s.pcapFinal(stopping).writeBytes(TestCapture.pcap(2))
         TestCapture.meta(s.metaFinal(stopping), stopping)
-        val out = s.recoverInterrupted(active, 100)
+        val out = s.recoverInterrupted(active, 100, 1L)
         assertEquals(listOf(stopping), out.map { it.id })
         assertEquals(SessionState.COMPLETE, s.get(stopping)!!.state)
         assertEquals(SessionState.RECORDING, s.get(active)!!.state)
@@ -128,7 +128,7 @@ class SessionStoreTest {
         val id = "44444444-0000-4000-8000-000000000000"
         s.create(id, "B", 1) // forwarding-only benchmark: no capture file
         s.update(id) { it.copy(state = SessionState.RECORDING) }
-        s.recoverInterrupted(null, 2)
+        s.recoverInterrupted(null, 2, 1L)
         assertEquals(SessionState.FAILED, s.get(id)!!.state)
     }
 
@@ -139,11 +139,11 @@ class SessionStoreTest {
         // A state file written before the format field existed.
         s.dir.resolve("$id.state.json").writeText(JSONObject().put("capture_id", id).put("seq", 1).put("state", "COMPLETE")
             .put("created_ms", 1).put("finalized_ms", 2).put("finalize_seq", 1).toString())
-        assertEquals(SessionRecord.FORMAT_LEGACY, s.get(id)!!.format)
+        assertEquals(SessionFormat.LEGACY, s.get(id)!!.format)
         assertEquals("$id.pcapng", s.pcapFinal(id).name)
         assertEquals("$id.meta.json", s.metaFinal(id).name)
         val fresh = s.create("66666666-0000-4000-8000-000000000000", "F", 3)
-        assertEquals(SessionRecord.FORMAT_PCAP_META, fresh.format)
+        assertEquals(SessionFormat.PCAP_META, fresh.format)
         assertEquals("${fresh.id}.meta", s.metaFinal(fresh.id).name)
     }
 }

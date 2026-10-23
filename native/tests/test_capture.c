@@ -5,6 +5,9 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/resource.h>
 
 #include "mpc/capture.h"
 #include "testutil.h"
@@ -18,8 +21,6 @@ static const uint8_t SRV6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0,
 typedef struct {
     int dir;
     uint32_t orig, cap;
-    uint64_t flow;
-    int32_t uid;
     uint64_t ts_ns;
 } expect_t;
 
@@ -35,28 +36,23 @@ static void feed(mpc_capture *c, int dir, const uint8_t *pkt, size_t len, uint64
     if (!slot)
         return;
     memcpy(slot, pkt, cl);
-    const mpc_rec_hdr *h = (const mpc_rec_hdr *)slot - 1;
-    E[NE++] = (expect_t){dir, (uint32_t)len, cl, h->flow_id, h->uid, ts};
+    E[NE++] = (expect_t){dir, (uint32_t)len, cl, ts};
     mpc_capture_commit(c);
 }
 
-/* First-seen timestamps reported in UID requests, by flow id. */
+/* New-flow announcements seen by the (mimicked) Kotlin worker, by flow id. */
 static uint64_t FIRST_SEEN[16];
+static int ANNOUNCED;
 
-static void deliver(mpc_capture *c, uint64_t flow_id, int32_t uid)
+static void poll_flows(mpc_capture *c)
 {
-    /* Mimic Kotlin: poll requests, answer the matching one. */
     mpc_uid_request rq[16];
     int n = mpc_capture_uid_poll(c, rq, 16, 10);
     for (int i = 0; i < n; i++) {
         if (rq[i].flow_id < 16)
             FIRST_SEEN[rq[i].flow_id] = rq[i].first_seen_ns;
-        if (rq[i].flow_id != flow_id)
-            continue;
-        mpc_uid_resolution r = {.flow_id = flow_id, .uid = uid, .key = rq[i].key};
-        CHECK_EQ(mpc_capture_uid_deliver(c, &r, 1), 1);
+        ANNOUNCED++;
     }
-    mpc_capture_apply_uids(c); /* normally on the forwarding thread via eventfd */
 }
 
 static int fixture(const char *dir)
@@ -67,10 +63,7 @@ static int fixture(const char *dir)
                               .snaplen = 64,
                               .mtu = 1500,
                               .variant = MPC_VARIANT_E_UID,
-                              .ring_bytes = 1 << 20,
-                              .if_name = "tun0",
-                              .userappl = "mini_pcap_collect test_capture",
-                              .os = "host-test"};
+                              .ring_bytes = 1 << 20};
     int err;
     mpc_capture *c = mpc_capture_create(&cfg, &err);
     CHECK(c != NULL);
@@ -89,15 +82,14 @@ static int fixture(const char *dir)
     /* 2: SYN-ACK DL same flow */
     n = build_tcp(pkt, 4, SRV4, 443, APP4, 40000, 5000, 1001, 0x12, 65535, NULL, 0);
     feed(c, MPC_DIR_DOWNLINK, pkt, n, t0 + 2000);
-    /* UID resolution arrives after the first two packets. */
-    deliver(c, 1, 10234);
+    poll_flows(c);
     /* 3: data UL 1400 B -> truncated to 64 */
     n = build_tcp(pkt, 4, APP4, 40000, SRV4, 443, 1001, 5001, 0x18, 65535, payload, 1400);
     feed(c, MPC_DIR_UPLINK, pkt, n, t0 + 3000);
     /* 4: IPv6 UDP DNS-ish UL (flow 2), never resolved */
     n = build_udp(pkt, 6, APP6, 5353, SRV6, 53, payload, 20);
     feed(c, MPC_DIR_UPLINK, pkt, n, t0 + 4000);
-    deliver(c, 2, -1); /* INVALID_UID */
+    poll_flows(c);
     /* 5: IPv6 UDP DL reply same flow */
     n = build_udp(pkt, 6, SRV6, 53, APP6, 5353, payload, 100);
     feed(c, MPC_DIR_DOWNLINK, pkt, n, t0 + 5000);
@@ -122,7 +114,7 @@ static int fixture(const char *dir)
     n = build_tcp(pkt, 4, APP4, 40000, SRV4, 443, 9000, 0, 0x02, 65535, NULL, 0);
     feed(c, MPC_DIR_UPLINK, pkt, n, t0 + 12000);
 
-    deliver(c, 99, 0); /* collect the remaining requests (flows 3, 4) */
+    poll_flows(c); /* flows 3, 4 */
     CHECK_EQ(mpc_capture_finish(c), 0);
     /* The request carries the exact timestamp of the flow's first packet (its first PCAP record). */
     CHECK_EQ(FIRST_SEEN[1], t0 + 1000);
@@ -134,20 +126,10 @@ static int fixture(const char *dir)
     CHECK_EQ(cnt[MPC_CNT_records_written], NE);
     CHECK_EQ(cnt[MPC_CNT_capture_queue_drops_ul] + cnt[MPC_CNT_capture_queue_drops_dl], 0);
     CHECK_EQ(cnt[MPC_CNT_uid_requests_queued], 4); /* flows 1,2,3(udp v4),4(new gen) */
-    CHECK_EQ(cnt[MPC_CNT_uid_resolutions_applied], 2);
+    CHECK_EQ(ANNOUNCED, 4); /* each flow generation announced exactly once */
+    CHECK(cnt[MPC_CNT_capture_ring_peak_slots] <= (uint64_t)NE); /* real backlog, not ring size */
     CHECK_EQ(cnt[MPC_CNT_unparsable_packets], 2);
     CHECK_EQ(cnt[MPC_CNT_nonflow_packets], 2);
-
-    /* Expected flow/uid assignments. */
-    CHECK(E[0].flow == 1 && E[0].uid == -1);
-    CHECK(E[1].flow == 1 && E[1].uid == -1);
-    CHECK(E[2].flow == 1 && E[2].uid == 10234 && E[2].cap == 64 && E[2].orig == 1440);
-    CHECK(E[3].flow == 2 && E[3].uid == -1);
-    CHECK(E[4].flow == 2 && E[4].uid == -1);
-    CHECK(E[5].flow == 0 && E[6].flow == 0 && E[7].flow == 0 && E[8].flow == 0);
-    CHECK(E[9].flow == 3);
-    CHECK(E[10].flow == 1 && E[10].uid == 10234);
-    CHECK(E[11].flow == 4 && E[11].uid == -1);
 
     snprintf(path, sizeof(path), "%s/fixture.expected.json", dir);
     J = fopen(path, "w");
@@ -156,12 +138,11 @@ static int fixture(const char *dir)
             (long long)c->anchor_boot_ns, (long long)c->anchor_real_ns);
     for (int i = 0; i < NE; i++) {
         long long ts_ns = c->anchor_real_ns + ((long long)E[i].ts_ns - c->anchor_boot_ns);
-        fprintf(J, "  {\"dir\": \"%s\", \"orig_len\": %u, \"cap_len\": %u, \"flow_id\": %llu, \"uid\": %d, \"ts_ns\": %lld, \"boot_ns\": %llu}%s\n",
-                E[i].dir == MPC_DIR_UPLINK ? "uplink" : "downlink", E[i].orig, E[i].cap,
-                (unsigned long long)E[i].flow, E[i].uid, ts_ns, (unsigned long long)E[i].ts_ns,
-                i + 1 < NE ? "," : "");
+        fprintf(J, "  {\"dir\": \"%s\", \"orig_len\": %u, \"cap_len\": %u, \"ts_ns\": %lld, \"boot_ns\": %llu}%s\n",
+                E[i].dir == MPC_DIR_UPLINK ? "uplink" : "downlink", E[i].orig, E[i].cap, ts_ns,
+                (unsigned long long)E[i].ts_ns, i + 1 < NE ? "," : "");
     }
-    fprintf(J, " ],\n \"flow_uid_map\": {\"1\": 10234}\n}\n");
+    fprintf(J, " ]\n}\n");
     fclose(J);
     mpc_capture_destroy(c);
     return 0;
@@ -230,6 +211,16 @@ static uint32_t cap_of(mpc_capture *c, const uint8_t *pkt, size_t n)
     return cl;
 }
 
+static void cap_of_dir(mpc_capture *c, int dir, const uint8_t *pkt, size_t n)
+{
+    uint32_t cl;
+    uint8_t *slot = mpc_capture_begin(c, dir, mpc_now_boottime_ns(), pkt, n, (uint32_t)n, &cl);
+    if (slot) {
+        memcpy(slot, pkt, cl);
+        mpc_capture_commit(c);
+    }
+}
+
 static void header_floor(void)
 {
     uint8_t pkt[2048], payload[1400] = {0};
@@ -260,36 +251,104 @@ static void header_floor(void)
     printf("header floor: IPv4+TCP 40, IPv6+TCP(opts) 72, IPv6+UDP 48 bytes kept with snaplen 32 and headers-only\n");
 }
 
-/* Storage failure: writing to a full device is counted, not fatal to the producer. */
-static void storage_error(void)
+/* A flow whose announcement did not fit the full request queue is announced by a later
+ * packet, so every flow eventually gets an owner lookup (and a FLOW_MAPPING). */
+static void uid_request_retry(void)
 {
-    if (access("/dev/full", W_OK) != 0)
-        return;
-    mpc_capture_config cfg = {.pcap_path = "/dev/full", .snaplen = 128, .mtu = 1500,
-                              .variant = MPC_VARIANT_D_WRITER, .ring_bytes = 256 * 1024};
+    char path[] = "/tmp/mpc-retry-XXXXXX";
+    int tfd = mkstemp(path);
+    close(tfd);
+    mpc_capture_config cfg = {.snaplen = 64, .mtu = 1500, .variant = MPC_VARIANT_E_UID, .ring_bytes = 4 << 20,
+                              .pcap_path = path};
     int err;
     mpc_capture *c = mpc_capture_create(&cfg, &err);
     CHECK(c != NULL);
     if (!c)
         return;
     CHECK_EQ(mpc_capture_start_writer(c), 0);
-    uint8_t pkt[256];
-    size_t n = build_udp(pkt, 4, APP4, 7000, SRV4, 9, "x", 1);
-    for (int i = 0; i < 100; i++) {
+    uint8_t pkt[128];
+    int flows = 5000; /* > 4096 request slots */
+    for (int i = 0; i < flows; i++) {
+        size_t n = build_udp(pkt, 4, APP4, (uint16_t)(10000 + i), SRV4, 53, "q", 1);
+        cap_of_dir(c, MPC_DIR_UPLINK, pkt, n);
+    }
+    uint64_t cnt[MPC_CNT__COUNT];
+    mpc_capture_snapshot(c, cnt, MPC_CNT__COUNT);
+    CHECK(cnt[MPC_CNT_uid_request_queue_overflows] > 0);
+    mpc_uid_request rq[512];
+    int got = 0, n;
+    while ((n = mpc_capture_uid_poll(c, rq, 512, 0)) > 0)
+        got += n;
+    for (int i = 0; i < flows; i++) { /* second packet of every flow */
+        size_t len = build_udp(pkt, 4, SRV4, 53, APP4, (uint16_t)(10000 + i), "r", 1);
+        cap_of_dir(c, MPC_DIR_DOWNLINK, pkt, len);
+    }
+    while ((n = mpc_capture_uid_poll(c, rq, 512, 0)) > 0)
+        got += n;
+    CHECK_EQ(got, flows);
+    CHECK_EQ(mpc_capture_finish(c), 0);
+    mpc_capture_destroy(c);
+    unlink(path);
+    printf("uid request retry: %d flows announced after %llu queue overflows\n", got,
+           (unsigned long long)cnt[MPC_CNT_uid_request_queue_overflows]);
+}
+
+/* Storage failure. (1) A device that rejects even the file header fails at start.
+ * (2) A file that stops accepting data mid-capture (here: RLIMIT_FSIZE) is counted, not
+ * fatal to the producer, and every offered record is either on disk or counted dropped. */
+static void storage_error(const char *dir)
+{
+    if (access("/dev/full", W_OK) == 0) {
+        mpc_capture_config full = {.pcap_path = "/dev/full", .snaplen = 128, .mtu = 1500,
+                                   .variant = MPC_VARIANT_D_WRITER, .ring_bytes = 256 * 1024};
+        int err;
+        mpc_capture *c = mpc_capture_create(&full, &err);
+        CHECK(c != NULL);
+        if (c) {
+            CHECK_EQ(mpc_capture_start_writer(c), -1);
+            mpc_capture_destroy(c);
+        }
+    }
+    char path[512];
+    snprintf(path, sizeof(path), "%s/limited.pcap", dir);
+    mpc_capture_config cfg = {.pcap_path = path, .snaplen = 128, .mtu = 1500,
+                              .variant = MPC_VARIANT_D_WRITER, .ring_bytes = 1 << 20,
+                              .writer_buf_bytes = 64 * 1024};
+    int err;
+    mpc_capture *c = mpc_capture_create(&cfg, &err);
+    CHECK(c != NULL);
+    if (!c)
+        return;
+    signal(SIGXFSZ, SIG_IGN); /* exceeding the limit -> EFBIG instead of a signal */
+    struct rlimit old, lim = {.rlim_cur = 100 * 1024, .rlim_max = RLIM_INFINITY};
+    getrlimit(RLIMIT_FSIZE, &old);
+    lim.rlim_max = old.rlim_max;
+    setrlimit(RLIMIT_FSIZE, &lim);
+    CHECK_EQ(mpc_capture_start_writer(c), 0);
+    uint8_t pkt[256], payload[100] = {0};
+    size_t n = build_udp(pkt, 4, APP4, 7000, SRV4, 9, payload, sizeof(payload));
+    const int offered = 5000; /* ~148 B per record: ~740 KB > 100 KB limit */
+    for (int i = 0; i < offered; i++) {
         uint32_t cl;
-        uint8_t *slot = mpc_capture_begin(c, MPC_DIR_UPLINK, mpc_now_boottime_ns(), pkt, n,
-                                          (uint32_t)n, &cl);
+        uint8_t *slot = mpc_capture_begin(c, MPC_DIR_UPLINK, mpc_now_boottime_ns(), pkt, n, (uint32_t)n, &cl);
         if (slot) {
             memcpy(slot, pkt, cl);
             mpc_capture_commit(c);
         }
     }
     CHECK_EQ(mpc_capture_finish(c), -1);
+    setrlimit(RLIMIT_FSIZE, &old);
     uint64_t cnt[MPC_CNT__COUNT];
     mpc_capture_snapshot(c, cnt, MPC_CNT__COUNT);
+    uint64_t q = cnt[MPC_CNT_capture_queue_drops_ul];
     CHECK(cnt[MPC_CNT_storage_errors] >= 1);
-    CHECK_EQ(cnt[MPC_CNT_storage_dropped_records], 100);
+    CHECK(cnt[MPC_CNT_storage_dropped_records] > 0);
+    CHECK_EQ(cnt[MPC_CNT_records_written] + cnt[MPC_CNT_storage_dropped_records] + q, (uint64_t)offered);
+    CHECK(cnt[MPC_CNT_records_written] * 148 <= 100 * 1024); /* nothing counted that is not on disk */
+    printf("storage error: %llu written, %llu dropped after the file stopped growing\n",
+           (unsigned long long)cnt[MPC_CNT_records_written], (unsigned long long)cnt[MPC_CNT_storage_dropped_records]);
     mpc_capture_destroy(c);
+    unlink(path);
 }
 
 /* V31: the forwarding-thread tap must not allocate. glibc mallinfo2() totals stay
@@ -343,7 +402,8 @@ int main(int argc, char **argv)
     fixture(dir);
     stall(dir);
     header_floor();
-    storage_error();
+    uid_request_retry();
+    storage_error(dir);
     no_alloc_on_tap();
     TEST_DONE();
 }

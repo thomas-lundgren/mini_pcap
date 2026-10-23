@@ -1,9 +1,10 @@
-package dev.minipcap.capture
+package dev.minipcap.meta.apps
 
 import android.net.ConnectivityManager
 import android.os.Process
 import android.os.SystemClock
 import android.system.OsConstants
+import dev.minipcap.capture.NativeCore
 import dev.minipcap.meta.MetaFormat
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -21,10 +22,10 @@ class FlowResult(
 )
 
 /**
- * Off-packet-path UID worker. Receives batched new-flow requests from native code,
- * calls [ConnectivityManager.getConnectionOwnerUid] (allowed for the active VPN app),
- * retries INVALID_UID with bounded backoff and returns batched resolutions to the
- * native flow cache. Every flow ends in exactly one [onFlow] call, resolved or not.
+ * Off-packet-path flow-owner worker. Receives batched new-flow announcements from native
+ * code, calls [ConnectivityManager.getConnectionOwnerUid] (allowed for the active VPN app)
+ * and retries INVALID_UID with bounded backoff. Every flow ends in exactly one [onFlow]
+ * call (FLOW_MAPPING), resolved or not; nothing is sent back to the packet path.
  */
 class UidResolver(
     private val handle: Long,
@@ -44,10 +45,8 @@ class UidResolver(
     @Volatile var lookupCalls = 0L; private set
     private val latencies = ArrayList<Long>()
 
-    private val reqBuf = ByteBuffer.allocateDirect(BATCH * NativeCore.UID_REQUEST_BYTES).order(ByteOrder.LITTLE_ENDIAN)
-    private val resBuf = ByteBuffer.allocateDirect(BATCH * NativeCore.UID_RESOLUTION_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+    private val reqBuf = ByteBuffer.allocateDirect(BATCH * NativeCore.FLOW_REQUEST_BYTES).order(ByteOrder.LITTLE_ENDIAN)
     private val retries = PriorityQueue<Pending>(compareBy { it.due })
-    private var resCount = 0
 
     override fun run() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
@@ -58,7 +57,7 @@ class UidResolver(
             val n = NativeCore.nativeUidPoll(handle, reqBuf, BATCH, timeout)
             if (n < 0) break
             for (i in 0 until n) {
-                val base = i * NativeCore.UID_REQUEST_BYTES
+                val base = i * NativeCore.FLOW_REQUEST_BYTES
                 val key = ByteArray(40)
                 for (j in 0 until 40) key[j] = reqBuf.get(base + 8 + j)
                 requests++
@@ -66,7 +65,6 @@ class UidResolver(
             }
             val t = SystemClock.elapsedRealtime()
             while (retries.isNotEmpty() && retries.peek()!!.due <= t) attempt(retries.poll()!!)
-            flush()
         }
         // Session closed: flows still pending retry are recorded as unresolved.
         for (p in retries) record(p, null, MetaFormat.RES_UNRESOLVED_SESSION_ENDED)
@@ -78,8 +76,7 @@ class UidResolver(
         val uid = lookup(p.key)
         if (uid != Process.INVALID_UID) {
             record(p, uid, if (p.attempts == 1) MetaFormat.RES_FIRST_LOOKUP else MetaFormat.RES_AFTER_RETRY)
-            queueResolution(p, uid)
-            onUid(uid)
+            runCatching { onUid(uid) }
             return
         }
         if (p.attempts <= RETRY_DELAYS_MS.size) {
@@ -87,7 +84,6 @@ class UidResolver(
             retries.add(p)
         } else {
             record(p, null, MetaFormat.RES_UNRESOLVED_INVALID_UID)
-            queueResolution(p, -1)
         }
     }
 
@@ -121,22 +117,6 @@ class UidResolver(
         } catch (e: IllegalArgumentException) {
             Process.INVALID_UID
         }
-    }
-
-    private fun queueResolution(p: Pending, uid: Int) {
-        val base = resCount * NativeCore.UID_RESOLUTION_BYTES
-        resBuf.putLong(base, p.flowId)
-        resBuf.putInt(base + 8, uid)
-        resBuf.putInt(base + 12, 0)
-        for (j in 0 until 40) resBuf.put(base + 16 + j, p.key[j])
-        resCount++
-        if (resCount == BATCH) flush()
-    }
-
-    private fun flush() {
-        if (resCount == 0) return
-        NativeCore.nativeUidDeliver(handle, resBuf, resCount)
-        resCount = 0
     }
 
     fun latencyPercentiles(): Map<String, Long> = synchronized(latencies) {

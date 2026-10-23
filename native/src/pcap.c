@@ -2,7 +2,9 @@
 
 #include <string.h>
 
-static inline void w32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); } /* host = little endian */
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "PCAP fields are written in host order (little endian)");
+
+static inline void w32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 static inline void w16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
 static inline void b16(uint8_t *p, uint16_t v)
 {

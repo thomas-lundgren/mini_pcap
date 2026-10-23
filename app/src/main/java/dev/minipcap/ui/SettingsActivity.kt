@@ -10,9 +10,9 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import dev.minipcap.R
-import dev.minipcap.capture.ClassRules
-import dev.minipcap.capture.MeasurementConfig
-import dev.minipcap.capture.MotionMode
+import dev.minipcap.meta.apps.ClassRules
+import dev.minipcap.meta.collect.MeasurementConfig
+import dev.minipcap.meta.collect.MotionMode
 import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.Exports
 import dev.minipcap.upload.UploadClient

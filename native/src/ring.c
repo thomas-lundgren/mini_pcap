@@ -8,7 +8,7 @@ int mpc_ring_init(mpc_ring *r, uint32_t slot_size, size_t max_bytes)
 {
     memset(r, 0, sizeof(*r));
     slot_size = (slot_size + 7u) & ~7u;
-    if (slot_size == 0 || max_bytes < slot_size * 2u)
+    if (slot_size == 0 || max_bytes < (size_t)slot_size * 2u)
         return -1;
     size_t n = max_bytes / slot_size;
     uint32_t p = 1;

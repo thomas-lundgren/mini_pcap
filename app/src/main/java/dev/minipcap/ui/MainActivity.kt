@@ -3,10 +3,8 @@ package dev.minipcap.ui
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -18,29 +16,21 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
-import android.widget.LinearLayout
 import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import dev.minipcap.App
 import dev.minipcap.BuildConfig
 import dev.minipcap.R
 import dev.minipcap.capture.CaptureConfig
 import dev.minipcap.capture.FilterMode
-import dev.minipcap.capture.MeasurementConfig
-import dev.minipcap.capture.MotionMode
+import dev.minipcap.meta.collect.MeasurementConfig
 import dev.minipcap.capture.Variant
 import dev.minipcap.service.CaptureVpnService
-import dev.minipcap.service.Notifications
-import dev.minipcap.storage.CaptureFileProvider
-import dev.minipcap.storage.CapturePair
-import dev.minipcap.storage.ExportFile
-import dev.minipcap.storage.ExportStatus
+import dev.minipcap.notify.Notifications
 import dev.minipcap.storage.Exports
-import dev.minipcap.storage.PrivateFile
-import dev.minipcap.storage.SessionRecord
-import dev.minipcap.storage.SessionState
+import dev.minipcap.session.SessionState
+import dev.minipcap.session.Sessions
 import dev.minipcap.upload.UploadJobService
 import dev.minipcap.upload.UploadStatus
 import java.text.DateFormat
@@ -63,7 +53,8 @@ class MainActivity : Activity() {
     private lateinit var tvUploadStatus: TextView
     private lateinit var btnUpload: Button
     private lateinit var btnCancelUpload: Button
-    private lateinit var listSessions: LinearLayout
+    private lateinit var sessionList: SessionList
+    private val debug = DebugCommands(this)
     private var loadingConfig = false
     private val listener: () -> Unit = { main.post { refresh() } }
     private val ticker = object : Runnable {
@@ -90,7 +81,7 @@ class MainActivity : Activity() {
         tvUploadStatus = findViewById(R.id.tvUploadStatus)
         btnUpload = findViewById(R.id.btnUpload)
         btnCancelUpload = findViewById(R.id.btnCancelUpload)
-        listSessions = findViewById(R.id.listSessions)
+        sessionList = SessionList(this, findViewById(R.id.listSessions)) { refresh() }
 
         spSnaplen.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             CaptureConfig.SNAPLENS.map {
@@ -124,87 +115,45 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
 
-        if (savedInstanceState == null) handleDebugCommand(intent)
-        val rec = (application as App).recovered
-        if (rec.isNotEmpty()) {
-            (application as App).recovered = emptyList()
-            AlertDialog.Builder(this)
-                .setTitle(R.string.recovered_title)
-                .setMessage(getString(R.string.recovered_text, rec.size, rec.joinToString("\n") { "${it.id.take(8)}: ${it.state}" }))
-                .setPositiveButton(android.R.string.ok, null)
-                .show()
-        }
+        if (savedInstanceState == null) debug.handle(intent)
+    }
+
+    /** Once, after next-launch recovery has finished (it runs in the background). */
+    private fun showRecovered() {
+        if (!Sessions.recoveryDone) return
+        val rec = Sessions.recovered
+        if (rec.isEmpty()) return
+        Sessions.recovered = emptyList()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.recovered_title)
+            .setMessage(getString(R.string.recovered_text, rec.size, rec.joinToString("\n") { "${it.id.take(8)}: ${it.state}" }))
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleDebugCommand(intent)
-    }
-
-    /**
-     * Debug builds only: automation hook for validation/perf scripts, e.g.
-     *   am start -n dev.minipcap/.ui.MainActivity --es cmd start --es variant E --ei snaplen 256
-     * Commands: start, stop, stall (--ei ms), upload, server (--es url, --es token),
-     * move (latest finalized pair), automove (--ez on). start also takes --ez gps/radio/motion,
-     * --ei motion_hz, --es motion_mode ALL|MAX_RATE|THRESHOLD.
-     * Release builds ignore these extras entirely.
-     */
-    private fun handleDebugCommand(i: Intent?) {
-        if (!BuildConfig.DEBUG || i == null) return
-        val cmd = i.getStringExtra("cmd") ?: return
-        i.removeExtra("cmd")
-        when (cmd) {
-            "start" -> {
-                var c = CaptureConfig.load(this)
-                i.getStringExtra("variant")?.let { v -> c = c.copy(variant = Variant.valueOf(v)) }
-                if (i.hasExtra("snaplen")) c = c.copy(snaplen = i.getIntExtra("snaplen", 256))
-                i.getStringExtra("mode")?.let { m -> c = c.copy(filterMode = FilterMode.valueOf(m)) }
-                i.getStringExtra("pkgs")?.let { p -> c = c.copy(selectedPackages = p.split(',').filter { it.isNotBlank() }.toSet()) }
-                var m = MeasurementConfig.load(this)
-                if (i.hasExtra("gps")) m = m.copy(gps = i.getBooleanExtra("gps", true))
-                if (i.hasExtra("radio")) m = m.copy(radio = i.getBooleanExtra("radio", true))
-                if (i.hasExtra("motion")) m = m.copy(motion = i.getBooleanExtra("motion", true))
-                if (i.hasExtra("motion_hz")) m = m.copy(motionHz = i.getIntExtra("motion_hz", 50))
-                i.getStringExtra("motion_mode")?.let { mm -> m = m.copy(motionMode = MotionMode.valueOf(mm)) }
-                MeasurementConfig.save(this, m)
-                CaptureConfig.save(this, c)
-                loadConfig()
-                onStartStop(automated = true)
-            }
-            "stop" -> CaptureVpnService.active?.let { CaptureVpnService.requestStop(this, it.id) }
-            "stall" -> startService(Intent(this, CaptureVpnService::class.java)
-                .setAction(CaptureVpnService.ACTION_DEBUG_STALL)
-                .putExtra(CaptureVpnService.EXTRA_STALL_MS, i.getIntExtra("ms", 1000)))
-            "upload" -> uploadLatest()
-            "move" -> UploadJobService.stores(this).first.list().firstOrNull { Exports.mover(this).eligible(it) }
-                ?.let { Exports.request(this, it.id) }
-            "automove" -> Exports.setAutoMove(this, i.getBooleanExtra("on", true))
-            "server" -> {
-                val s = dev.minipcap.upload.UploadSettings(this)
-                s.save(i.getStringExtra("url") ?: s.load().baseUrl, i.getBooleanExtra("wifi_only", false))
-                if (i.hasExtra("token")) s.setToken(i.getStringExtra("token"))
-            }
-        }
+        debug.handle(intent)
     }
 
     override fun onResume() {
         super.onResume()
         loadConfig()
-        CaptureVpnService.listeners.add(listener)
+        Sessions.listeners.add(listener)
         UploadJobService.listeners.add(listener)
         Exports.listeners.add(listener)
         main.post(ticker)
     }
 
     override fun onPause() {
-        CaptureVpnService.listeners.remove(listener)
+        Sessions.listeners.remove(listener)
         UploadJobService.listeners.remove(listener)
         Exports.listeners.remove(listener)
         main.removeCallbacks(ticker)
         super.onPause()
     }
 
-    private fun loadConfig() {
+    internal fun loadConfig() {
         loadingConfig = true
         val c = CaptureConfig.load(this)
         rgFilter.check(when (c.filterMode) {
@@ -238,8 +187,8 @@ class MainActivity : Activity() {
         btnPickApps.isEnabled = mode != FilterMode.ALL
     }
 
-    private fun onStartStop(automated: Boolean = false) {
-        val a = CaptureVpnService.active
+    internal fun onStartStop(automated: Boolean = false) {
+        val a = Sessions.active
         if (a != null) {
             if (a.state == SessionState.RECORDING) CaptureVpnService.requestStop(this, a.id)
             return
@@ -249,8 +198,8 @@ class MainActivity : Activity() {
             Toast.makeText(this, R.string.include_empty, Toast.LENGTH_LONG).show()
             return
         }
-        // Context recording: ask for the runtime permissions once per Start; capture starts
-        // either way and records "permission_denied" for whatever was refused.
+        // Measurements: ask for the runtime permissions once per Start; capture starts either
+        // way and the .meta file records SENSOR_STATUS permission_denied for what was refused.
         // Automation (debug) never shows dialogs: grant with `adb shell pm grant` beforehand.
         val m = MeasurementConfig.load(this)
         if (!automated) {
@@ -287,7 +236,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun uploadLatest() {
+    internal fun uploadLatest() {
         val (sessions, _) = UploadJobService.stores(this)
         val latest = sessions.latestCompleted(Exports.mover(this)::pairFor)
         if (latest == null) {
@@ -297,14 +246,14 @@ class MainActivity : Activity() {
         scheduleUpload(latest.id)
     }
 
-    private fun scheduleUpload(id: String) {
+    internal fun scheduleUpload(id: String) {
         val err = UploadJobService.schedule(this, id)
         if (err != null) Toast.makeText(this, err, Toast.LENGTH_LONG).show()
         refresh()
     }
 
     private fun refresh() {
-        val a = CaptureVpnService.active
+        val a = Sessions.active
         val recording = a != null
         tvState.text = when (a?.state) {
             null -> getString(R.string.state_idle)
@@ -329,7 +278,7 @@ class MainActivity : Activity() {
                 c["capture_queue_drops_ul"] + c["capture_queue_drops_dl"], Notifications.size(c["file_bytes"]),
                 c["flows_created"], r?.resolved ?: 0, r?.misses ?: 0,
                 c["tcp_conns_active"], c["udp_sessions_active"], c["tcp_connect_failures"])
-        } else CaptureVpnService.lastResult ?: ""
+        } else Sessions.lastResult ?: ""
 
         val (sessions, uploads) = UploadJobService.stores(this)
         val latest = sessions.latestCompleted(Exports.mover(this)::pairFor)
@@ -351,92 +300,8 @@ class MainActivity : Activity() {
         btnUpload.isEnabled = !recording && latest != null && !busy
         btnUpload.text = getString(if (ur?.status == UploadStatus.FAILED || ur?.status == UploadStatus.CANCELED) R.string.retry_upload else R.string.upload_latest)
         btnCancelUpload.isEnabled = busy
-        renderSessions(sessions.list().take(20))
-    }
-
-    private var lastRendered: List<String> = emptyList()
-
-    private fun renderSessions(list: List<SessionRecord>) {
-        val (_, uploads) = UploadJobService.stores(this)
-        val exports = Exports.store(this)
-        val moving = Exports.progress
-        val rows = list.map { r ->
-            val u = uploads.get(r.id).status
-            val e = exports.get(r.id)
-            val size = if (e.status == ExportStatus.EXPORTED) e.pcapSize
-                else UploadJobService.stores(this).first.pcapFinal(r.id).takeIf { it.exists() }?.length()
-            val where = when {
-                moving?.id == r.id -> "  moving ${moving.done * 100 / maxOf(moving.total, 1)}%"
-                e.status == ExportStatus.EXPORTED -> "  in ${e.location}"
-                e.status == ExportStatus.QUEUED -> "  move queued"
-                e.status == ExportStatus.FAILED -> "  move failed: ${e.lastError}"
-                else -> ""
-            }
-            "${r.id.take(8)}  ${r.state}  ${r.variant}  ${size?.let { Notifications.size(it) } ?: "-"}  " +
-                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(r.createdMs)) +
-                (if (u != UploadStatus.NOT_UPLOADED) "  upload:$u" else "") +
-                (r.stopReason?.let { "  ($it)" } ?: "") + where
-        }
-        if (rows == lastRendered) return
-        lastRendered = rows
-        listSessions.removeAllViews()
-        list.zip(rows).forEach { (r, text) ->
-            val tv = TextView(this).apply {
-                this.text = text
-                textSize = 12f
-                setPadding(0, 12, 0, 12)
-                setOnClickListener { sessionActions(r) }
-            }
-            listSessions.addView(tv)
-        }
-    }
-
-    private fun sessionActions(r: SessionRecord) {
-        val (sessions, _) = UploadJobService.stores(this)
-        val mover = Exports.mover(this)
-        val pair = mover.pairFor(r)
-        val e = Exports.store(this).get(r.id)
-        val items = ArrayList<Pair<String, () -> Unit>>()
-        if (pair != null) items += getString(R.string.share_pair) to { share(pair) }
-        if (pair != null && r.state == SessionState.COMPLETE && CaptureVpnService.active == null)
-            items += getString(R.string.upload_this) to { scheduleUpload(r.id) }
-        if (mover.eligible(r) && e.status != ExportStatus.EXPORTED && e.status != ExportStatus.QUEUED && !Exports.isLocked(r.id))
-            items += getString(R.string.move_to_downloads) to { Exports.request(this, r.id); refresh() }
-        if (!r.state.isActive) items += getString(R.string.delete) to {
-            AlertDialog.Builder(this).setMessage(R.string.delete_confirm)
-                .setPositiveButton(R.string.delete) { _, _ ->
-                    if (Exports.isLocked(r.id)) {
-                        Toast.makeText(this, R.string.delete_busy, Toast.LENGTH_LONG).show()
-                    } else {
-                        if (!mover.deleteExported(r.id)) Toast.makeText(this, R.string.delete_shared_failed, Toast.LENGTH_LONG).show()
-                        sessions.delete(r.id)
-                    }
-                    refresh()
-                }
-                .setNegativeButton(android.R.string.cancel, null).show()
-        }
-        if (items.isEmpty()) return
-        AlertDialog.Builder(this).setTitle(r.id)
-            .setItems(items.map { it.first }.toTypedArray()) { _, i -> items[i].second() }
-            .show()
-    }
-
-    private fun share(pair: CapturePair) {
-        val files = listOf(pair.pcap, pair.meta)
-        val uris = ArrayList(files.map {
-            when (it) {
-                is PrivateFile -> CaptureFileProvider.uriFor(it.file)
-                is ExportFile -> Uri.parse(it.ref)
-                else -> throw IllegalStateException()
-            }
-        })
-        val clip = ClipData.newRawUri(files[0].name, uris[0]).apply { for (u in uris.drop(1)) addItem(ClipData.Item(u)) }
-        val send = Intent(Intent.ACTION_SEND_MULTIPLE)
-            .setType("*/*")
-            .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        send.clipData = clip
-        startActivity(Intent.createChooser(send, getString(R.string.share_pair)))
+        sessionList.render(sessions.list().take(20))
+        showRecovered()
     }
 
     companion object {

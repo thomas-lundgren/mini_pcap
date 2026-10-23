@@ -6,8 +6,8 @@ import dev.minipcap.storage.ExportFile
 import dev.minipcap.storage.ExportRecord
 import dev.minipcap.storage.ExportStatus
 import dev.minipcap.storage.ExportStore
-import dev.minipcap.storage.SessionState
-import dev.minipcap.storage.SessionStore
+import dev.minipcap.session.SessionState
+import dev.minipcap.session.SessionStore
 import dev.minipcap.storage.SyncedOutput
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals

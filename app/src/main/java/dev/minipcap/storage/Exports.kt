@@ -12,8 +12,7 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
-import dev.minipcap.upload.UploadStatus
-import dev.minipcap.upload.UploadStore
+import dev.minipcap.session.Sessions
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -37,7 +36,7 @@ class MediaStoreDownloads(ctx: Context) : ExportDestination {
     override fun create(name: String, mime: String): String {
         val v = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            // octet-stream keeps ".pcapng" (a pcap MIME type would make MediaStore change the extension).
+            // octet-stream keeps any extension (a pcap MIME type would make MediaStore change it).
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
             put(MediaStore.MediaColumns.RELATIVE_PATH, relPath)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
@@ -106,12 +105,12 @@ class MediaStoreDownloads(ctx: Context) : ExportDestination {
 
 /**
  * Process-wide coordinator for moving finalized pairs to Downloads. Moves run one at a
- * time in [ExportJobService]; a capture being moved is locked against upload and vice versa.
+ * time in [ExportJobService]; a pair being moved holds the [Sessions] transfer lock, which
+ * an upload also takes, so the two never touch the same pair at once.
  */
 object Exports {
     private const val TAG = "Exports"
     private const val PREFS = "export"
-    private val locked = HashSet<String>()
     val listeners = CopyOnWriteArraySet<() -> Unit>()
 
     class Progress(val id: String, val done: Long, val total: Long)
@@ -123,15 +122,13 @@ object Exports {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("auto_move", on).apply()
 
     fun mover(ctx: Context): CaptureMover {
-        val dir = CaptureFileProvider.capturesDir(ctx)
-        return CaptureMover(SessionStore(dir), ExportStore(dir), MediaStoreDownloads(ctx))
+        val dir = Sessions.dir(ctx)
+        return CaptureMover(Sessions.store(ctx), ExportStore(dir), MediaStoreDownloads(ctx))
     }
 
-    fun store(ctx: Context) = ExportStore(CaptureFileProvider.capturesDir(ctx))
+    fun store(ctx: Context) = ExportStore(Sessions.dir(ctx))
 
-    @Synchronized fun tryLock(id: String) = locked.add(id)
-    @Synchronized fun unlock(id: String) { locked.remove(id) }
-    @Synchronized fun isLocked(id: String) = id in locked
+    fun isLocked(id: String) = Sessions.isLocked(id)
 
     fun notifyListeners() = listeners.forEach { runCatching { it() } }
 
@@ -147,20 +144,19 @@ object Exports {
         val mover = mover(ctx)
         val exports = store(ctx)
         val auto = autoMove(ctx)
-        return SessionStore(CaptureFileProvider.capturesDir(ctx)).list().sortedBy { it.seq }.filter {
+        return Sessions.store(ctx).list().sortedBy { it.seq }.filter {
             val st = exports.get(it.id).status
             mover.eligible(it) && (st == ExportStatus.QUEUED || (auto && st == ExportStatus.NOT_EXPORTED))
         }.map { it.id }
     }
 
     /**
-     * Moves one pair on the calling (job) thread. Returns false if it was skipped because
-     * an upload holds or awaits it; the job retries it after the upload ends.
+     * Moves one pair on the calling (job) thread. Returns false if it was skipped because an
+     * upload holds it; the job retries it after the upload ends. (A queued upload is fine: it
+     * reads the pair from wherever it is when it runs.)
      */
     fun moveOne(ctx: Context, id: String, cancelled: () -> Boolean): Boolean {
-        val up = UploadStore(CaptureFileProvider.capturesDir(ctx)).get(id).status
-        if (up == UploadStatus.QUEUED || up == UploadStatus.UPLOADING) return false
-        if (!tryLock(id)) return false
+        if (!Sessions.tryLock(id)) return false
         var last = 0L
         try {
             mover(ctx).move(id, cancelled) { done, total ->
@@ -176,7 +172,7 @@ object Exports {
             store(ctx).update(id) { it.copy(status = ExportStatus.FAILED, lastError = e.message ?: e.javaClass.simpleName) }
         } finally {
             progress = null
-            unlock(id)
+            Sessions.unlock(id)
             notifyListeners()
         }
         return true

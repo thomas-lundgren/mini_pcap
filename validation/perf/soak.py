@@ -2,7 +2,7 @@
 """Endurance soak (V18/V34): variant F, Include(com.android.shell), mixed load each
 minute (UDP 2k pps x 200 B for 40 s, 10 s TCP download, 50 short TCP connections).
 Samples every minute: app RSS / native heap / threads / fds, tun0 packets, battery and
-thermal. At the end: stop, validate PCAPNG + sidecar, report drops and memory trend.
+thermal. At the end: stop, validate PCAP + metadata, report drops and memory trend.
 Usage: soak.py --host <ip> --minutes 60 [--out dir]
 """
 import argparse
@@ -69,7 +69,7 @@ def main():
     bench.app_cmd("--es", "cmd", "stop")
     bench.wait_vpn(False, 30)
     time.sleep(2)
-    # Newest session's sidecar (keep), PCAPNG validated on host then deleted from host copy.
+    # Newest session: validated on the host, counters kept, capture files deleted.
     sess = []
     for name in bench.adb("run-as", PKG, "ls", "files/captures").split():
         if name.endswith(".state.json"):
@@ -84,7 +84,7 @@ def main():
     v = subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(__file__), "..", "..", "analyzer", "mpcanalyze.py"),
                         "validate", pc, mp], capture_output=True, text=True).stdout
     m = bench.session_summary(mp)
-    json.dump(m, open(os.path.join(out, "sidecar.json"), "w"), indent=1)
+    json.dump(m, open(os.path.join(out, "counters.json"), "w"), indent=1)
     rss = [s["rss_kb"] for s in samples]
     summary = {"minutes": a.minutes, "state": last["state"], "pcap_meta_valid": '"ok": true' in v,
                "records": m["stats"]["packets_recorded"], "capture_queue_drops": m["stats"]["capture_queue_drops"],

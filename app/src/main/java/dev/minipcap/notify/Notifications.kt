@@ -1,4 +1,4 @@
-package dev.minipcap.service
+package dev.minipcap.notify
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import dev.minipcap.R
-import dev.minipcap.ui.MainActivity
 import java.util.Locale
 
 object Notifications {
@@ -27,9 +26,13 @@ object Notifications {
         nm.createNotificationChannel(NotificationChannel(CH_UPLOAD, ctx.getString(R.string.ch_upload), NotificationManager.IMPORTANCE_LOW))
     }
 
+    /** The app's launcher activity (no compile-time dependency on the UI layer). */
+    fun appIntent(ctx: Context): Intent =
+        (ctx.packageManager.getLaunchIntentForPackage(ctx.packageName) ?: Intent())
+            .setPackage(ctx.packageName).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
     private fun openApp(ctx: Context): PendingIntent = PendingIntent.getActivity(
-        ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        ctx, 0, appIntent(ctx), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
     private fun base(ctx: Context, channel: String, title: String, text: String): Notification.Builder =
         Notification.Builder(ctx, channel)
@@ -43,19 +46,8 @@ object Notifications {
         base(ctx, CH_CAPTURE, ctx.getString(R.string.n_starting_title), ctx.getString(R.string.n_starting_text))
             .setOngoing(true).build()
 
-    /**
-     * Explicit, immutable, session-scoped Stop action into the non-exported service.
-     * The request code is derived from the session id so a stale PendingIntent from
-     * an older session cannot be reused for the current one.
-     */
-    fun stopAction(ctx: Context, sessionId: String): PendingIntent = PendingIntent.getService(
-        ctx, sessionId.hashCode(),
-        Intent(ctx, CaptureVpnService::class.java)
-            .setAction(CaptureVpnService.ACTION_STOP_LOGGING)
-            .putExtra(CaptureVpnService.EXTRA_SESSION_ID, sessionId),
-        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-
-    fun recording(ctx: Context, sessionId: String, elapsedMs: Long, packets: Long?, bytes: Long?): Notification {
+    /** Ongoing recording status with the session-scoped [stop] action (built by the capture service). */
+    fun recording(ctx: Context, stop: PendingIntent, elapsedMs: Long, packets: Long?, bytes: Long?): Notification {
         val text = if (packets == null) ctx.getString(R.string.n_recording_static)
         else String.format(Locale.US, "%s • %,d packets • %s", duration(elapsedMs), packets, size(bytes ?: 0))
         val pub = base(ctx, CH_CAPTURE, ctx.getString(R.string.n_recording_title), ctx.getString(R.string.n_recording_static)).build()
@@ -64,7 +56,7 @@ object Notifications {
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(pub)
             .setUsesChronometer(false)
-            .addAction(Notification.Action.Builder(null, ctx.getString(R.string.stop_logging), stopAction(ctx, sessionId)).build())
+            .addAction(Notification.Action.Builder(null, ctx.getString(R.string.stop_logging), stop).build())
             .build()
     }
 

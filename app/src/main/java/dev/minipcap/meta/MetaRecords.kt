@@ -19,11 +19,8 @@ class CellMeasurement(
 
 /** Typed encoders for every record type; each returns false if the record was dropped. */
 object MetaRecords {
-    private fun status(c: Any) = when (c) {
-        is CellIdentity -> (if (c.registered) 1 else 0) or ((c.conn and 3) shl 1)
-        is CellMeasurement -> (if (c.registered) 1 else 0) or ((c.conn and 3) shl 1)
-        else -> 0
-    }
+    /** Cell entry status byte: bit 0 registered (serving), bits 1-2 connection status. */
+    private fun status(registered: Boolean, conn: Int) = (if (registered) 1 else 0) or ((conn and 3) shl 1)
 
     fun sessionInfo(w: MetaWriter, ts: Long, info: Map<String, String>) =
         w.emit(MetaFormat.SESSION_INFO, MetaFormat.TS_LOGGER, ts, critical = true) { b ->
@@ -95,7 +92,11 @@ object MetaRecords {
         serviceState: Int?, roaming: Boolean?, operator: String?, operatorName: String?,
     ) = w.emit(MetaFormat.RADIO_STATE, MetaFormat.TS_LOGGER, ts) { b ->
         var p = 0
-        listOf(dataNetworkType, override, dataState, dataActivity, serviceState).forEachIndexed { i, v -> if (v != null) p = p or (1 shl i) }
+        if (dataNetworkType != null) p = p or 1
+        if (override != null) p = p or (1 shl 1)
+        if (dataState != null) p = p or (1 shl 2)
+        if (dataActivity != null) p = p or (1 shl 3)
+        if (serviceState != null) p = p or (1 shl 4)
         if (roaming != null) p = p or (1 shl 5)
         if (operator != null) p = p or (1 shl 6)
         if (operatorName != null) p = p or (1 shl 7)
@@ -121,7 +122,7 @@ object MetaRecords {
                 if (c.tac != null) p = p or (1 shl 6)
                 if (c.bandwidthKhz != null) p = p or (1 shl 7)
                 if (c.bands != null) p = p or (1 shl 8)
-                b.putShort(0).put(c.rat.toByte()).put(status(c).toByte()).putInt(p).putLong(c.tsNs ?: 0)
+                b.putShort(0).put(c.rat.toByte()).put(status(c.registered, c.conn).toByte()).putInt(p).putLong(c.tsNs ?: 0)
                 b.putShort((c.mcc ?: 0).toShort()).putShort((c.mnc ?: 0).toShort()).put(c.mncDigits.toByte())
                     .put(0).putShort(0)
                 b.putLong(c.cid ?: 0).putInt(c.pci ?: 0).putInt(c.arfcn ?: 0).putInt(c.tac ?: 0).putInt(c.bandwidthKhz ?: 0)
@@ -143,7 +144,7 @@ object MetaRecords {
                 if (c.arfcn != null) p = p or (1 shl 2)
                 if (c.level != null) p = p or (1 shl 3)
                 for (i in 0 until 8) if (c.m.getOrNull(i) != null) p = p or (1 shl (4 + i))
-                b.putShort(0).put(c.rat.toByte()).put(status(c).toByte()).putInt(p).putLong(c.tsNs ?: 0)
+                b.putShort(0).put(c.rat.toByte()).put(status(c.registered, c.conn).toByte()).putInt(p).putLong(c.tsNs ?: 0)
                 b.putInt(c.pci ?: 0).putInt(c.arfcn ?: 0).putInt(c.level ?: 0)
                 for (i in 0 until 8) b.putInt(c.m.getOrNull(i) ?: 0)
                 b.putShort(start, (b.position() - start).toShort())
@@ -169,10 +170,16 @@ object MetaRecords {
         tx: Int?, rx: Int?, standard: Int?, bssid: ByteArray?,
     ) = w.emit(MetaFormat.WIFI_STATE, MetaFormat.TS_LOGGER or (if (refresh) MetaFormat.FLAG_REFRESH else 0), ts) { b ->
         var p = if (connected) 1 else 0
-        listOf(rssi, freq, link, tx, rx, standard).forEachIndexed { i, v -> if (v != null) p = p or (1 shl (i + 1)) }
-        if (bssid != null && bssid.size == 6) p = p or (1 shl 7)
+        if (rssi != null) p = p or (1 shl 1)
+        if (freq != null) p = p or (1 shl 2)
+        if (link != null) p = p or (1 shl 3)
+        if (tx != null) p = p or (1 shl 4)
+        if (rx != null) p = p or (1 shl 5)
+        if (standard != null) p = p or (1 shl 6)
+        val hasBssid = bssid != null && bssid.size == 6
+        if (hasBssid) p = p or (1 shl 7)
         b.putInt(p).putInt(rssi ?: 0).putInt(freq ?: 0).putInt(link ?: 0).putInt(tx ?: 0).putInt(rx ?: 0).putInt(standard ?: 0)
-        if (bssid != null && bssid.size == 6) b.put(bssid) else b.put(ByteArray(6))
+        if (hasBssid) b.put(bssid!!) else b.putInt(0).putShort(0)
         b.putShort(0)
     }
 

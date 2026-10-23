@@ -41,7 +41,6 @@ int main(void)
     CHECK_EQ(mpc_ring_available(&R, &tail), 64);
     mpc_ring_release(&R, tail + 64);
     CHECK(mpc_ring_reserve(&R) != NULL);
-    CHECK_EQ(atomic_load(&R.peak_used), 64);
     mpc_ring_free(&R);
 
     CHECK_EQ(mpc_ring_init(&R, 16, 16 * 1024), 0);

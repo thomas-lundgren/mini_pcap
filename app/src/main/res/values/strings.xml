@@ -8,7 +8,7 @@
     <string name="ch_upload">Uploads</string>
     <string name="n_starting_title">Preparing packet capture</string>
     <string name="n_starting_text">Setting up VPN…</string>
-    <string name="n_recording_title">PCAPNG logging active</string>
+    <string name="n_recording_title">Packet logging active</string>
     <string name="n_recording_static">Recording packets on this device</string>
     <string name="n_stopping_title">Stopping capture</string>
     <string name="n_stopping_text">Flushing packets and writing metadata…</string>
@@ -43,7 +43,7 @@
     <string name="u_done">Uploaded — receipt %1$s</string>
     <string name="u_failed">Failed: %1$s</string>
     <string name="u_canceled">Canceled — local files kept</string>
-    <string name="share_pair">Share PCAPNG + sidecar</string>
+    <string name="share_pair">Share packet + metadata files</string>
     <string name="upload_this">Upload this capture</string>
     <string name="delete">Delete</string>
     <string name="measurements">Measurements (stored in the .meta file)</string>
@@ -64,7 +64,7 @@
     <string name="delete_shared_failed">Could not delete the copy in Download/MiniPcap; delete it there manually</string>
     <string name="storage_title">Storage</string>
     <string name="auto_move">Move finished captures to Download/MiniPcap (for USB copy)</string>
-    <string name="delete_confirm">Delete this capture and its sidecar from the device (including Download/MiniPcap)?</string>
+    <string name="delete_confirm">Delete this capture and its metadata file from the device (including Download/MiniPcap)?</string>
     <string name="recovered_title">Interrupted capture recovered</string>
     <string name="recovered_text">%1$d capture(s) were interrupted (app stopped without finalizing) and have been recovered from their last valid state:\n%2$s</string>
     <string name="search_apps">Search apps</string>

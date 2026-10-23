@@ -12,15 +12,15 @@ import android.os.Build
 import android.os.PersistableBundle
 import android.util.Log
 import dev.minipcap.R
-import dev.minipcap.service.CaptureVpnService
-import dev.minipcap.service.Notifications
-import dev.minipcap.storage.CaptureFileProvider
+import dev.minipcap.notify.Notifications
 import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.Exports
 import dev.minipcap.meta.MetaFormat
-import dev.minipcap.storage.SessionRecord
-import dev.minipcap.storage.SessionState
-import dev.minipcap.storage.SessionStore
+import dev.minipcap.session.SessionRecord
+import dev.minipcap.session.SessionState
+import dev.minipcap.session.SessionStore
+import dev.minipcap.session.SessionFormat
+import dev.minipcap.session.Sessions
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
@@ -38,20 +38,18 @@ class UploadJobService : JobService() {
         val listeners = CopyOnWriteArraySet<() -> Unit>()
         @Volatile private var cancelRequested = false
 
-        fun stores(ctx: Context): Pair<SessionStore, UploadStore> {
-            val dir = CaptureFileProvider.capturesDir(ctx)
-            return SessionStore(dir) to UploadStore(dir)
-        }
+        fun stores(ctx: Context): Pair<SessionStore, UploadStore> =
+            Sessions.store(ctx) to UploadStore(Sessions.dir(ctx))
 
         /** Validates and schedules; returns an error message or null. Call from a visible Activity. */
         fun schedule(ctx: Context, captureId: String): String? {
-            if (CaptureVpnService.active != null) return "Stop logging before uploading"
+            if (Sessions.active != null) return "Stop logging before uploading"
             val (sessions, uploads) = stores(ctx)
             val rec = sessions.get(captureId) ?: return "Unknown capture"
             if (rec.state != SessionState.COMPLETE) return "Capture is not complete"
-            if (rec.format != SessionRecord.FORMAT_PCAP_META) return "Older capture format cannot be uploaded (copy it over USB or share it)"
-            if (Exports.isLocked(captureId)) return "Capture is being moved to Downloads — try again when done"
-            val pair = Exports.mover(ctx).pairFor(rec) ?: return "Capture or sidecar file is missing (finalized pair not found)"
+            if (rec.format != SessionFormat.PCAP_META) return "Older capture format cannot be uploaded (copy it over USB or share it)"
+            if (Sessions.isLocked(captureId)) return "Capture is being moved to Downloads — try again when done"
+            val pair = Exports.mover(ctx).pairFor(rec) ?: return "Packet or metadata file is missing (finalized pair not found)"
             uploads.get(captureId).takeIf { it.status == UploadStatus.SUCCEEDED }?.let {
                 return "Already uploaded (receipt ${it.receiptId})"
             }
@@ -131,14 +129,14 @@ class UploadJobService : JobService() {
         val nm = getSystemService(NotificationManager::class.java)
         var lastUi = 0L
         // Held for the whole upload so the pair cannot be moved to Downloads meanwhile.
-        val locked = Exports.tryLock(id)
+        val locked = Sessions.tryLock(id)
         try {
             if (!locked) throw UploadException("Capture is being moved to Downloads — Retry when done", false)
-            if (CaptureVpnService.active != null) throw UploadException("Stop logging before uploading", false)
+            if (Sessions.active != null) throw UploadException("Stop logging before uploading", false)
             val rec = sessions.get(id) ?: throw UploadException("Capture no longer exists", false)
             if (rec.state != SessionState.COMPLETE) throw UploadException("Capture is not complete", false)
-            val pair = Exports.mover(this).pairFor(rec) ?: throw UploadException("Capture or sidecar file is missing", false)
-            if (rec.format != SessionRecord.FORMAT_PCAP_META)
+            val pair = Exports.mover(this).pairFor(rec) ?: throw UploadException("Packet or metadata file is missing", false)
+            if (rec.format != SessionFormat.PCAP_META)
                 throw UploadException("Older capture format (PCAPNG + JSON) cannot be uploaded; copy it over USB or share it", false)
             val scan = pair.meta.open().buffered(1 shl 16).use { MetaFormat.scan(it, pair.meta.length()) }
             if (scan.sessionId?.toString() != id || scan.endStatus != MetaFormat.END_COMPLETE || scan.truncatedBytes != 0L)
@@ -179,7 +177,7 @@ class UploadJobService : JobService() {
             Log.w(TAG, "upload failed: ${e.javaClass.simpleName}")
             if (!stopped) uploads.update(id) { it.copy(status = UploadStatus.FAILED, lastError = "Unexpected error: ${e.javaClass.simpleName}") }
         } finally {
-            if (locked) Exports.unlock(id)
+            if (locked) Sessions.unlock(id)
             val r = uploads.get(id)
             if (Build.VERSION.SDK_INT < 34) nm.cancel(Notifications.ID_UPLOAD)
             if (!stopped) nm.notify(Notifications.ID_UPLOAD + 1, Notification.Builder(this, Notifications.CH_UPLOAD)
