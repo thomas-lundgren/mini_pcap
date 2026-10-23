@@ -15,6 +15,8 @@ import dev.minipcap.R
 import dev.minipcap.service.CaptureVpnService
 import dev.minipcap.service.Notifications
 import dev.minipcap.storage.CaptureFileProvider
+import dev.minipcap.storage.ExportJobService
+import dev.minipcap.storage.Exports
 import dev.minipcap.storage.SessionState
 import dev.minipcap.storage.SessionStore
 import org.json.JSONObject
@@ -45,7 +47,9 @@ class UploadJobService : JobService() {
             if (CaptureVpnService.active != null) return "Stop logging before uploading"
             val (sessions, uploads) = stores(ctx)
             val rec = sessions.get(captureId) ?: return "Unknown capture"
-            val pair = sessions.pairFor(rec) ?: return "Capture is not complete (no finalized PCAPNG + sidecar pair)"
+            if (rec.state != SessionState.COMPLETE) return "Capture is not complete"
+            if (Exports.isLocked(captureId)) return "Capture is being moved to Downloads — try again when done"
+            val pair = Exports.mover(ctx).pairFor(rec) ?: return "Capture or sidecar file is missing (finalized pair not found)"
             uploads.get(captureId).takeIf { it.status == UploadStatus.SUCCEEDED }?.let {
                 return "Already uploaded (receipt ${it.receiptId})"
             }
@@ -124,12 +128,15 @@ class UploadJobService : JobService() {
         val (sessions, uploads) = stores(this)
         val nm = getSystemService(NotificationManager::class.java)
         var lastUi = 0L
+        // Held for the whole upload so the pair cannot be moved to Downloads meanwhile.
+        val locked = Exports.tryLock(id)
         try {
+            if (!locked) throw UploadException("Capture is being moved to Downloads — Retry when done", false)
             if (CaptureVpnService.active != null) throw UploadException("Stop logging before uploading", false)
             val rec = sessions.get(id) ?: throw UploadException("Capture no longer exists", false)
             if (rec.state != SessionState.COMPLETE) throw UploadException("Capture is not complete", false)
-            val pair = sessions.pairFor(rec) ?: throw UploadException("Capture or sidecar file is missing", false)
-            val meta = runCatching { JSONObject(pair.meta.readText()) }.getOrNull()
+            val pair = Exports.mover(this).pairFor(rec) ?: throw UploadException("Capture or sidecar file is missing", false)
+            val meta = runCatching { JSONObject(pair.meta.open().reader(Charsets.UTF_8).use { it.readText() }) }.getOrNull()
                 ?: throw UploadException("Sidecar is not valid JSON", false)
             if (meta.optString("capture_id") != id || meta.optString("status") != "complete" ||
                 meta.optString("capture_file") != pair.pcap.name)
@@ -170,6 +177,7 @@ class UploadJobService : JobService() {
             Log.w(TAG, "upload failed: ${e.javaClass.simpleName}")
             if (!stopped) uploads.update(id) { it.copy(status = UploadStatus.FAILED, lastError = "Unexpected error: ${e.javaClass.simpleName}") }
         } finally {
+            if (locked) Exports.unlock(id)
             val r = uploads.get(id)
             if (Build.VERSION.SDK_INT < 34) nm.cancel(Notifications.ID_UPLOAD)
             if (!stopped) nm.notify(Notifications.ID_UPLOAD + 1, Notification.Builder(this, Notifications.CH_UPLOAD)
@@ -179,6 +187,7 @@ class UploadJobService : JobService() {
                 .setAutoCancel(true)
                 .build())
             listeners.forEach { it() }
+            ExportJobService.schedule(this) // a move that waited for this upload
             if (!stopped) jobFinished(params, false)
         }
     }

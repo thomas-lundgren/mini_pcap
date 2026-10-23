@@ -16,6 +16,7 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
 | M4 App filter UI | DONE (basic) | All/Include/Exclude, searchable picker (launcher apps), snaplen; V07 verified with shell UID. Gap: two real third-party apps |
 | M5 Notification + Stop | DONE except tap test | systemExempted FGS, 1 Hz text, session-scoped Stop intent, idempotent stop (V09, V17), force-stop recovery (V11). Gap: physical tap on notification action, permission-denied, VPN revoke |
 | M6 Upload | DONE | receiver + 14 tests; Kotlin↔Python cross test; device upload SHA-256 identical, replay 200, 409, 401 preflight, refused while recording |
+| USB offload (ADR-012) | DONE (1 device) | finalized pairs moved to `Download/MiniPcap` with read-back SHA-256 check; force-stop mid-move recovered; upload from moved files. Gap: UI delete, MTP, API 29–32 |
 | M7 / P2 | PARTIAL | 60-min soak PASS (23.6M records, 0 drops, bounded memory); no energy, thermal-stress, snaplen sweep, cellular, second API level, security review |
 
 ## Verified accomplishments (this session)
@@ -26,6 +27,7 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
 - Performance harness and two benchmark runs (first superseded, see NOTE.md there).
 - Fixed defects found by device testing: tagged-pointer handle treated as error (native session leak on
   start "failure"), relay UDP drops under bursts, upload 401 surfacing, ERROR sessions not recovered.
+- Move of finalized pairs to `Download/MiniPcap` for USB offload (ADR-012), 8 new JVM tests, device-verified.
 
 ## Known problems / risks
 1. Occasional UDP burst loss (1/15 VPN runs, 3.4 %, p99 137 ms) with zero forwarder/capture errors — unexplained.
@@ -35,8 +37,10 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
 5. Per-packet forwarding cost at low packet rates is high (29–66 µs/pkt engine CPU at 2–5k pps) — forwarding
    (B) cost, not logging; candidates: batching TUN reads/writes, pbuf pool instead of malloc. Not optimized
    (plan: optimize only after profiling).
-6. Debug-only automation hook on the launcher activity (ignored in release builds).
-7. Personal test phone: system-wide CPU numbers noisy; no power meter.
+6. Moved captures in `Download/MiniPcap` are outside app-private storage (USB, all-files-access apps);
+   a move needs one capture's size + 64 MiB free; a move running during a new capture adds disk I/O (not measured).
+7. Debug-only automation hook on the launcher activity (ignored in release builds).
+8. Personal test phone: system-wide CPU numbers noisy; no power meter.
 
 ## Next bounded tasks
 - [ ] Independent review of engine.c (TCP relay state machine, fd/pcb lifetime) and capture.c (ring/writer).
@@ -45,6 +49,7 @@ Evidence: `docs/TEST_RESULTS.md` (commands, device, raw paths). Decisions: `docs
       second Android version (API 29–33 path for upload jobs).
 - [ ] Perfetto/simpleperf profile of `mpc-engine` before any forwarding optimization.
 - [ ] Coordinator sign-off on provisional P2 budgets using TEST_RESULTS §5.
+- [ ] Downloads move: UI delete on device, MTP browse from a desktop, API 29–32 device, capture drops while a large move runs.
 - [ ] CI (GitHub Actions or similar) running native tests, JVM tests and receiver tests.
 
 ## New session handoff

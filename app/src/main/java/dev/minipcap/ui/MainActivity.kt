@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -30,6 +31,11 @@ import dev.minipcap.capture.Variant
 import dev.minipcap.service.CaptureVpnService
 import dev.minipcap.service.Notifications
 import dev.minipcap.storage.CaptureFileProvider
+import dev.minipcap.storage.CapturePair
+import dev.minipcap.storage.ExportFile
+import dev.minipcap.storage.ExportStatus
+import dev.minipcap.storage.Exports
+import dev.minipcap.storage.PrivateFile
 import dev.minipcap.storage.SessionRecord
 import dev.minipcap.storage.SessionState
 import dev.minipcap.upload.UploadJobService
@@ -122,7 +128,8 @@ class MainActivity : Activity() {
     /**
      * Debug builds only: automation hook for validation/perf scripts, e.g.
      *   am start -n dev.minipcap/.ui.MainActivity --es cmd start --es variant E --ei snaplen 256
-     * Commands: start, stop, stall (--ei ms), upload, server (--es url, --es token).
+     * Commands: start, stop, stall (--ei ms), upload, server (--es url, --es token),
+     * move (latest finalized pair), automove (--ez on).
      * Release builds ignore these extras entirely.
      */
     private fun handleDebugCommand(i: Intent?) {
@@ -145,6 +152,9 @@ class MainActivity : Activity() {
                 .setAction(CaptureVpnService.ACTION_DEBUG_STALL)
                 .putExtra(CaptureVpnService.EXTRA_STALL_MS, i.getIntExtra("ms", 1000)))
             "upload" -> uploadLatest()
+            "move" -> UploadJobService.stores(this).first.list().firstOrNull { Exports.mover(this).eligible(it) }
+                ?.let { Exports.request(this, it.id) }
+            "automove" -> Exports.setAutoMove(this, i.getBooleanExtra("on", true))
             "server" -> {
                 val s = dev.minipcap.upload.UploadSettings(this)
                 s.save(i.getStringExtra("url") ?: s.load().baseUrl, i.getBooleanExtra("wifi_only", false))
@@ -158,12 +168,14 @@ class MainActivity : Activity() {
         loadConfig()
         CaptureVpnService.listeners.add(listener)
         UploadJobService.listeners.add(listener)
+        Exports.listeners.add(listener)
         main.post(ticker)
     }
 
     override fun onPause() {
         CaptureVpnService.listeners.remove(listener)
         UploadJobService.listeners.remove(listener)
+        Exports.listeners.remove(listener)
         main.removeCallbacks(ticker)
         super.onPause()
     }
@@ -221,7 +233,7 @@ class MainActivity : Activity() {
 
     private fun uploadLatest() {
         val (sessions, _) = UploadJobService.stores(this)
-        val latest = sessions.latestCompleted()
+        val latest = sessions.latestCompleted(Exports.mover(this)::pairFor)
         if (latest == null) {
             Toast.makeText(this, R.string.no_complete_capture, Toast.LENGTH_LONG).show()
             return
@@ -264,7 +276,7 @@ class MainActivity : Activity() {
         } else CaptureVpnService.lastResult ?: ""
 
         val (sessions, uploads) = UploadJobService.stores(this)
-        val latest = sessions.latestCompleted()
+        val latest = sessions.latestCompleted(Exports.mover(this)::pairFor)
         tvLatest.text = if (latest == null) getString(R.string.no_complete_capture)
         else getString(R.string.latest_complete, latest.id.take(8),
             DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(latest.finalizedMs)),
@@ -290,13 +302,24 @@ class MainActivity : Activity() {
 
     private fun renderSessions(list: List<SessionRecord>) {
         val (_, uploads) = UploadJobService.stores(this)
+        val exports = Exports.store(this)
+        val moving = Exports.progress
         val rows = list.map { r ->
             val u = uploads.get(r.id).status
-            val size = CaptureFileProvider.capturesDir(this).resolve("${r.id}.pcapng").takeIf { it.exists() }?.length()
+            val e = exports.get(r.id)
+            val size = if (e.status == ExportStatus.EXPORTED) e.pcapSize
+                else CaptureFileProvider.capturesDir(this).resolve("${r.id}.pcapng").takeIf { it.exists() }?.length()
+            val where = when {
+                moving?.id == r.id -> "  moving ${moving.done * 100 / maxOf(moving.total, 1)}%"
+                e.status == ExportStatus.EXPORTED -> "  in ${e.location}"
+                e.status == ExportStatus.QUEUED -> "  move queued"
+                e.status == ExportStatus.FAILED -> "  move failed: ${e.lastError}"
+                else -> ""
+            }
             "${r.id.take(8)}  ${r.state}  ${r.variant}  ${size?.let { Notifications.size(it) } ?: "-"}  " +
                 DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(r.createdMs)) +
                 (if (u != UploadStatus.NOT_UPLOADED) "  upload:$u" else "") +
-                (r.stopReason?.let { "  ($it)" } ?: "")
+                (r.stopReason?.let { "  ($it)" } ?: "") + where
         }
         if (rows == lastRendered) return
         lastRendered = rows
@@ -314,16 +337,26 @@ class MainActivity : Activity() {
 
     private fun sessionActions(r: SessionRecord) {
         val (sessions, _) = UploadJobService.stores(this)
-        val pair = sessions.pairFor(r)
+        val mover = Exports.mover(this)
+        val pair = mover.pairFor(r)
+        val e = Exports.store(this).get(r.id)
         val items = ArrayList<Pair<String, () -> Unit>>()
-        val dir = CaptureFileProvider.capturesDir(this)
-        val pcap = dir.resolve("${r.id}.pcapng")
-        val meta = dir.resolve("${r.id}.meta.json")
-        if (pcap.exists() && meta.exists()) items += getString(R.string.share_pair) to { share(listOf(pcap, meta)) }
-        if (pair != null && CaptureVpnService.active == null) items += getString(R.string.upload_this) to { scheduleUpload(r.id) }
+        if (pair != null) items += getString(R.string.share_pair) to { share(pair) }
+        if (pair != null && r.state == SessionState.COMPLETE && CaptureVpnService.active == null)
+            items += getString(R.string.upload_this) to { scheduleUpload(r.id) }
+        if (mover.eligible(r) && e.status != ExportStatus.EXPORTED && e.status != ExportStatus.QUEUED && !Exports.isLocked(r.id))
+            items += getString(R.string.move_to_downloads) to { Exports.request(this, r.id); refresh() }
         if (!r.state.isActive) items += getString(R.string.delete) to {
             AlertDialog.Builder(this).setMessage(R.string.delete_confirm)
-                .setPositiveButton(R.string.delete) { _, _ -> sessions.delete(r.id); refresh() }
+                .setPositiveButton(R.string.delete) { _, _ ->
+                    if (Exports.isLocked(r.id)) {
+                        Toast.makeText(this, R.string.delete_busy, Toast.LENGTH_LONG).show()
+                    } else {
+                        if (!mover.deleteExported(r.id)) Toast.makeText(this, R.string.delete_shared_failed, Toast.LENGTH_LONG).show()
+                        sessions.delete(r.id)
+                    }
+                    refresh()
+                }
                 .setNegativeButton(android.R.string.cancel, null).show()
         }
         if (items.isEmpty()) return
@@ -332,8 +365,15 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun share(files: List<java.io.File>) {
-        val uris = ArrayList(files.map { CaptureFileProvider.uriFor(it) })
+    private fun share(pair: CapturePair) {
+        val files = listOf(pair.pcap, pair.meta)
+        val uris = ArrayList(files.map {
+            when (it) {
+                is PrivateFile -> CaptureFileProvider.uriFor(it.file)
+                is ExportFile -> Uri.parse(it.ref)
+                else -> throw IllegalStateException()
+            }
+        })
         val clip = ClipData.newRawUri(files[0].name, uris[0]).apply { for (u in uris.drop(1)) addItem(ClipData.Item(u)) }
         val send = Intent(Intent.ACTION_SEND_MULTIPLE)
             .setType("*/*")

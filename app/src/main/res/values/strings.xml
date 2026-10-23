@@ -31,7 +31,7 @@
     <string name="retry_upload">Retry upload</string>
     <string name="cancel_upload">Cancel upload</string>
     <string name="saved_captures">Saved captures</string>
-    <string name="privacy_notice">Packet prefixes can contain domain names, credentials or message content. The default 256 bytes limits file size; it is not a privacy guarantee. Captures stay in app-private storage until you share, upload or delete them. Capture happens at the VPN interface, not the radio.</string>
+    <string name="privacy_notice">Packet prefixes can contain domain names, credentials or message content. The default 256 bytes limits file size; it is not a privacy guarantee. Finished captures are moved to Download/MiniPcap, where they can be copied over USB and read by file-manager apps with all-files access; turn this off in Settings to keep them in app-private storage. Capture happens at the VPN interface, not the radio.</string>
     <string name="include_empty">Include mode needs at least one selected app.</string>
     <string name="vpn_denied">VPN permission was not granted.</string>
     <string name="no_complete_capture">No complete capture yet</string>
@@ -46,7 +46,12 @@
     <string name="share_pair">Share PCAPNG + sidecar</string>
     <string name="upload_this">Upload this capture</string>
     <string name="delete">Delete</string>
-    <string name="delete_confirm">Delete this capture and its sidecar from the device?</string>
+    <string name="move_to_downloads">Move to Download/MiniPcap</string>
+    <string name="delete_busy">Capture is being moved or uploaded — try again when done</string>
+    <string name="delete_shared_failed">Could not delete the copy in Download/MiniPcap; delete it there manually</string>
+    <string name="storage_title">Storage</string>
+    <string name="auto_move">Move finished captures to Download/MiniPcap (for USB copy)</string>
+    <string name="delete_confirm">Delete this capture and its sidecar from the device (including Download/MiniPcap)?</string>
     <string name="recovered_title">Interrupted capture recovered</string>
     <string name="recovered_text">%1$d capture(s) were interrupted (app stopped without finalizing) and have been recovered from their last valid state:\n%2$s</string>
     <string name="search_apps">Search apps</string>

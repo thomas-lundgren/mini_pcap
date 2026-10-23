@@ -9,6 +9,8 @@ import android.widget.TextView
 import android.widget.Toast
 import dev.minipcap.R
 import dev.minipcap.capture.ClassRules
+import dev.minipcap.storage.ExportJobService
+import dev.minipcap.storage.Exports
 import dev.minipcap.upload.UploadClient
 import dev.minipcap.upload.UploadException
 import dev.minipcap.upload.UploadSettings
@@ -28,6 +30,8 @@ class SettingsActivity : Activity() {
         wifi.isChecked = cfg.wifiOnly
         token.hint = getString(if (cfg.hasToken) R.string.token_stored else R.string.token_none)
         rules.setText(ClassRules.loadText(this))
+        val autoMove = findViewById<CheckBox>(R.id.autoMove)
+        autoMove.isChecked = Exports.autoMove(this)
 
         fun save(): Boolean {
             val u = url.text.toString().trim()
@@ -40,6 +44,10 @@ class SettingsActivity : Activity() {
                 token.hint = getString(R.string.token_stored)
             }
             ClassRules.saveText(this, rules.text.toString())
+            if (autoMove.isChecked != Exports.autoMove(this)) {
+                Exports.setAutoMove(this, autoMove.isChecked)
+                if (autoMove.isChecked) ExportJobService.schedule(this)
+            }
             return true
         }
 

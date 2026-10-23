@@ -72,6 +72,25 @@ Format: Date · State · Problem · Options · Evidence · Decision · Consequen
 - Decision: app-private `files/captures/`: `<id>.pcapng.partial` → `<id>.pcapng`, sidecar checkpoint `<id>.meta.partial.json` every 10 s (variant F) → final `<id>.meta.json` (temp+fsync+rename), `<id>.state.json` per session, persisted `session`/`finalize` counters. "Latest" = highest `finalize_seq` among COMPLETE sessions with both files (never mtime). Next-launch recovery (App.onCreate) truncates the PCAPNG to the last complete block, writes a `status: recovered` sidecar from the last checkpoint, marks RECOVERED (not uploadable as "latest"). STOPPING sessions with a complete sidecar already written are completed.
 - Evidence: `SessionStoreTest` (6 tests); device force-stop test recovered 102,567 records.
 
+## ADR-012: Move finalized pairs to Download/MiniPcap for USB offload
+- Date: 2026-10-23 · State: **accepted** (requested by the user: store many captures, copy them off over USB)
+- Decision: capture still writes only to app-private storage (`.partial` never leaves it). After Stop
+  (and at every app start) `ExportJobService` (a regular JobScheduler job, so the copy survives the
+  Activity/VPN service ending) moves each finalized COMPLETE or RECOVERED pair to MediaStore Downloads
+  `Download/MiniPcap/` (API 29+, no storage permission): insert both entries hidden (`IS_PENDING=1`),
+  copy + fsync, read back and compare SHA-256 with the source, publish (sidecar first), commit
+  `<id>.export.json` = EXPORTED, then delete the private copies. One copy per capture afterwards.
+  `.state.json`/`.upload.json`/`.export.json` stay private. A crash before commit rolls back on the next
+  run (hidden entries deleted, private pair intact, move retried); a crash after commit only deletes the
+  leftover private copies. Upload/share use the moved files; a capture being moved is locked against
+  upload and vice versa. Setting "Move finished captures to Download/MiniPcap" (default on); off keeps
+  pairs private until the user picks **Move to Download/MiniPcap**. Delete removes both locations.
+- Consequences: moved captures are visible over USB/MTP and `adb pull`, and readable by apps with
+  all-files access (privacy notice updated). Files deleted/renamed outside the app make that capture
+  "missing" for upload/share. A move needs free space for one extra copy plus 64 MiB; otherwise it fails
+  and the pair stays private. Moving is disk I/O concurrent with a new capture (not benchmarked).
+- Evidence: `CaptureMoverTest` (8 tests with an in-memory destination); device tests in TEST_RESULTS §4.
+
 ### Pending decisions
 - Provisional P2 budgets (coordinator sign-off after reviewing P0/P1 numbers in `docs/TEST_RESULTS.md`).
 - Whether recovered captures may be uploaded (would need protocol support for `status: recovered`).

@@ -24,6 +24,7 @@ import dev.minipcap.capture.Sidecar
 import dev.minipcap.capture.SidecarData
 import dev.minipcap.capture.UidResolver
 import dev.minipcap.storage.CaptureFileProvider
+import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.SessionState
 import dev.minipcap.storage.SessionStore
 import dev.minipcap.ui.MainActivity
@@ -361,6 +362,7 @@ class CaptureVpnService : VpnService() {
                 throw java.io.IOException("rename of capture file failed")
             store.metaCheckpoint(a.id).delete()
             store.markFinalized(a.id, SessionState.COMPLETE, now, reason)
+            ExportJobService.schedule(this) // moves the pair to Downloads if enabled
             lastResult = "Saved ${a.id.take(8)} (${c["records_written"]} packets)"
         } catch (e: Exception) {
             Log.e(TAG, "finalize failed: ${e.message}")

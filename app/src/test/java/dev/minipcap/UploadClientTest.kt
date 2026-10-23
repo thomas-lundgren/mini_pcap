@@ -35,8 +35,8 @@ class UploadClientTest {
         val meta = dir.resolve("a.meta.json").apply { writeText("{\"x\":1}") }
         val parts = listOf(
             UploadClient.Part("manifest", null, "application/json", "{}".toByteArray(), null),
-            UploadClient.Part("capture", pcap.name, "application/octet-stream", null, pcap),
-            UploadClient.Part("metadata", meta.name, "application/json", null, meta))
+            UploadClient.Part("capture", pcap.name, "application/octet-stream", null, dev.minipcap.storage.PrivateFile(pcap)),
+            UploadClient.Part("metadata", meta.name, "application/json", null, dev.minipcap.storage.PrivateFile(meta)))
         val total = UploadClient.multipartLength("B0UND", parts)
         val out = ByteArrayOutputStream()
         var last = 0L
@@ -52,7 +52,7 @@ class UploadClientTest {
     fun cancellationStopsStreaming() {
         val dir = Files.createTempDirectory("mp").toFile()
         val big = dir.resolve("b.pcapng").apply { writeBytes(ByteArray(2_000_000)) }
-        val parts = listOf(UploadClient.Part("capture", big.name, "application/octet-stream", null, big))
+        val parts = listOf(UploadClient.Part("capture", big.name, "application/octet-stream", null, dev.minipcap.storage.PrivateFile(big)))
         var n = 0
         try {
             UploadClient.writeMultipart(ByteArrayOutputStream(), "B", parts, 0, { _, _ -> }, { ++n > 5 })

@@ -1,8 +1,9 @@
 package dev.minipcap.upload
 
+import dev.minipcap.storage.CaptureFile
+import dev.minipcap.storage.PrivateFile
 import org.json.JSONObject
 import java.io.File
-import java.io.FileInputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.net.ConnectException
@@ -57,14 +58,19 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
         }
     }
 
+    fun upload(
+        captureId: String, pcap: File, meta: File, pcapDigest: FileDigest, metaDigest: FileDigest,
+        onProgress: (sent: Long, total: Long) -> Unit, cancelled: () -> Boolean,
+    ): UploadReceipt = upload(captureId, PrivateFile(pcap), PrivateFile(meta), pcapDigest, metaDigest, onProgress, cancelled)
+
     /**
      * Streams the pair in one multipart request with bounded buffers. Success only
      * after the receipt matches capture ID and both locally computed digests.
      */
     fun upload(
         captureId: String,
-        pcap: File,
-        meta: File,
+        pcap: CaptureFile,
+        meta: CaptureFile,
         pcapDigest: FileDigest,
         metaDigest: FileDigest,
         onProgress: (sent: Long, total: Long) -> Unit,
@@ -98,7 +104,7 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
         }
     }
 
-    class Part(val field: String, val filename: String?, val type: String, val bytes: ByteArray?, val file: File?) {
+    class Part(val field: String, val filename: String?, val type: String, val bytes: ByteArray?, val file: CaptureFile?) {
         fun size(): Long = bytes?.size?.toLong() ?: file!!.length()
         fun header(boundary: String): ByteArray {
             val disp = if (filename != null) "form-data; name=\"$field\"; filename=\"$filename\"" else "form-data; name=\"$field\""
@@ -107,11 +113,13 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
     }
 
     companion object {
-        fun sha256(f: File): FileDigest {
+        fun sha256(f: File): FileDigest = sha256(PrivateFile(f))
+
+        fun sha256(f: CaptureFile): FileDigest {
             val md = MessageDigest.getInstance("SHA-256")
             val buf = ByteArray(64 * 1024)
             var size = 0L
-            FileInputStream(f).use { inp ->
+            f.open().use { inp ->
                 while (true) {
                     val n = inp.read(buf)
                     if (n < 0) break
@@ -156,7 +164,7 @@ class UploadClient(private val baseUrl: String, private val token: String?) {
                 } else {
                     // The file must not change after hashing: a size check catches truncation/growth.
                     var remaining = p.file!!.length()
-                    FileInputStream(p.file).use { inp ->
+                    p.file!!.open().use { inp ->
                         while (remaining > 0) {
                             val n = inp.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
                             if (n < 0) throw IOException("file shrank during upload")

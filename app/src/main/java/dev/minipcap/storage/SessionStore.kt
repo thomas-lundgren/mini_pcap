@@ -45,7 +45,7 @@ data class SessionRecord(
 }
 
 /** An immutable, finalized capture + sidecar pair eligible for upload/export. */
-data class CapturePair(val id: String, val pcap: File, val meta: File, val finalizedMs: Long, val finalizeSeq: Long)
+data class CapturePair(val id: String, val pcap: CaptureFile, val meta: CaptureFile, val finalizedMs: Long, val finalizeSeq: Long)
 
 /**
  * Persistent session registry in app-private storage. One `<id>.state.json` per
@@ -99,25 +99,28 @@ class SessionStore(val dir: File) {
             .mapNotNull { runCatching { SessionRecord.fromJson(JSONObject(it.readText())) }.getOrNull() }
             .sortedByDescending { it.seq }
 
-    /** Newest COMPLETE session by finalization sequence whose two artifacts both exist. */
+    /**
+     * Newest COMPLETE session by finalization sequence whose two artifacts both exist.
+     * [pairOf] locates the pair (private by default; CaptureMover also finds moved pairs).
+     */
     @Synchronized
-    fun latestCompleted(): CapturePair? = list()
+    fun latestCompleted(pairOf: (SessionRecord) -> CapturePair? = ::pairFor): CapturePair? = list()
         .filter { it.state == SessionState.COMPLETE && it.finalizeSeq != null }
         .sortedWith(compareByDescending<SessionRecord> { it.finalizeSeq }.thenByDescending { it.id })
-        .firstNotNullOfOrNull { pairFor(it) }
+        .firstNotNullOfOrNull { pairOf(it) }
 
     @Synchronized
     fun pairFor(r: SessionRecord): CapturePair? {
         val p = pcapFinal(r.id)
         val m = metaFinal(r.id)
         if (r.state != SessionState.COMPLETE || !p.isFile || !m.isFile) return null
-        return CapturePair(r.id, p, m, r.finalizedMs ?: 0, r.finalizeSeq ?: 0)
+        return CapturePair(r.id, PrivateFile(p), PrivateFile(m), r.finalizedMs ?: 0, r.finalizeSeq ?: 0)
     }
 
     @Synchronized
     fun delete(id: String) {
         listOf(pcapPartial(id), pcapFinal(id), metaCheckpoint(id), metaFinal(id), stateFile(id),
-            File(dir, "$id.upload.json")).forEach { it.delete() }
+            File(dir, "$id.upload.json"), File(dir, "$id.export.json")).forEach { it.delete() }
     }
 
     /**

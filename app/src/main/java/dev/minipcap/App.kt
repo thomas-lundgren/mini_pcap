@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import dev.minipcap.service.Notifications
 import dev.minipcap.storage.CaptureFileProvider
+import dev.minipcap.storage.ExportJobService
 import dev.minipcap.storage.SessionRecord
 import dev.minipcap.storage.SessionStore
 import dev.minipcap.upload.UploadJobService
@@ -29,5 +30,7 @@ class App : Application() {
         val pending = UploadJobService.isPending(this)
         val uploads = UploadStore(dir)
         store.list().forEach { uploads.reconcileInterrupted(it.id, pending) }
+        // The job first finishes or rolls back an interrupted move to Downloads, then moves pending pairs.
+        ExportJobService.schedule(this)
     }
 }

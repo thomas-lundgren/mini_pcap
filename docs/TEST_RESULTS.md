@@ -25,13 +25,14 @@ Command: `./validation/scripts/check_native.sh`
 | Python independent parser | `pcapng_tool.py check-fixture`: every record's direction, lengths, flow ID, UID, µs timestamp; retrospective join of flow 1's first two packets via `flow_uid_map` | OK |
 | tshark cross-check | `frame.packet_flags_direction` (0x2 UL / 0x1 DL), `frame.len`/`cap_len`, `frame.comment`, `frame.time_epoch` ±1.5 µs for all 12 records; `capinfos` reads Raw IP, µs resolution, snaplen 64 | OK |
 
-## 2. JVM unit tests — PASS (17/17)
+## 2. JVM unit tests — PASS (25/25)
 
 Command: `./gradlew testDebugUnitTest`
 
 | Class | Tests | Notes |
 |---|---|---|
 | `SessionStoreTest` | 6 | latest = highest finalize sequence (not creation/mtime); skips active/recovered/unpaired; truncation of a mid-block-killed file; force-stop recovery from checkpoint → `recovered`; STOPPING + complete sidecar → COMPLETE; forwarding-only session without file → FAILED |
+| `CaptureMoverTest` | 8 | (2026-10-23) move to an in-memory Downloads stand-in: copy + fsync + read-back SHA-256 → publish → private deleted, "latest" finds moved pair; corrupted read-back → rollback, private kept; system cancel → rollback, retried; no space / name conflict fail safely; only finalized COMPLETE/RECOVERED pairs eligible; reconcile rolls back an interrupted move and finishes a committed one; stale hidden entries replaced; shared files deleted outside the app → pair reported missing |
 | `SidecarTest` | 2 | contract keys, UTC timestamps, null UIDs, stats aggregation, class rules parsing |
 | `UploadClientTest` | 7 | streaming SHA-256 vs reference, exact multipart length, progress reaches total, cancellation, receipt must match ID + both digests, HTTP error mapping/retryability, HTTPS-only URL validation |
 | `UploadIntegrationTest` | 2 | **Kotlin client ↔ Python receiver over TLS (test CA)**: health 200 / bad token 401; 1.6 MB upload 201 with byte-identical server files; identical retry 200 same receipt; same ID different content 409 without overwrite; wrong digest 422 and no dataset; untrusted CA → TLS error |
@@ -70,6 +71,11 @@ out-of-order parts → 400; path-traversal filename and non-UUID ID → 400; mis
 | V07 | Include / Exclude | PASS (shell UID as test app) | `device_lifecycle.py`: Include(com.android.shell) → +2001 tun0 pkts for a 2000-pkt workload; Exclude → +32 tun0 pkts (other apps), bypassed shell kept UDP 0 % loss and 183.5 Mbit/s TCP |
 | V09 | Stop under TCP download + duplicate Stop | PASS | one finalization, COMPLETE, 70,410 records, 0 drops, finalize 179 ms, PCAPNG + sidecar valid |
 | V17 | 5 rapid Start/Stop cycles | PASS | 5 sessions, all COMPLETE, VPN down at end |
+| ADR-012 | existing captures auto-moved to `Download/MiniPcap` on first launch of the new build | PASS | 7 pairs; private dir keeps only state/upload/export records; `adb pull /sdcard/Download/MiniPcap/` (14 files) → every SHA-256 equals `export.json`, `pcapng_tool.py validate` ok; MediaStore rows `is_pending=0`, owner `dev.minipcap` |
+| ADR-012 | Force-stop **during** a move of a 1,001,010,344-byte capture (snaplen 0, 40 s TCP download at 180.7 Mbit/s) | PASS | record EXPORTING with private pair intact at force-stop; relaunch → hidden entries rolled back, move redone in 5.3 s, no `(1)` duplicates; host pull (37.9 MB/s over USB) SHA-256 `9eadd385…9ab2` = record, PCAPNG valid (942,538 records), sidecar `complete` |
+| ADR-012 | Upload latest from the moved location | PASS | receipt `srv-000003`; receiver SHA-256 of both files == phone record |
+| ADR-012 | Auto-move off → stays private; manual move | PASS | after Stop only private files; debug `move` → EXPORTED, pair in `Download/MiniPcap` |
+| ADR-012 | Delete from the UI (both locations), files deleted from a PC, MTP browsing from a desktop file manager | **NOT TESTED** on device (delete/missing logic unit-tested only; MediaStore indexing verified, MTP itself not) |
 | V27 | token not in logs | PASS (app) | token string absent from app logs; one occurrence was adbd logging the *test harness* command line (documented debug-hook caveat) |
 
 ## 5. Performance (P0 / P1)
@@ -159,4 +165,5 @@ Notification-action *tap* (blocked by another app's biometric overlay), V10 noti
 V12 VPN revoked by another VPN, V14 Wi-Fi↔cellular handover and cellular networks, V13 low disk on device
 (host `/dev/full` test only), V15 shared-UID classification on device, V24 reboot during upload, V25 metered
 cellular policy, V33 snaplen sweep, P2 energy/thermal, second Android API level, Perfetto/simpleperf traces,
-independent review.
+independent review. Downloads move (ADR-012): UI delete on device, files removed from a PC, MTP
+browsing, low space during a move, API 29–32 MediaStore path, capture disk-I/O impact of a concurrent move.

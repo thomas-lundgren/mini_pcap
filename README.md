@@ -44,6 +44,10 @@ Host tools used by validation: `tshark`/`capinfos` (Wireshark ≥ 4.2), Python 3
    *Saved captures*; tap one to share the pair or upload it.
 3. Settings: HTTPS server URL, optional API token (stored encrypted), Wi-Fi-only, **Test**.
    **Upload latest** sends the newest *complete* capture + sidecar (never during recording).
+4. Finished pairs are **moved** to `Download/MiniPcap/` (Settings → Storage; on by default), so many
+   captures can be kept and copied off over USB — a desktop file manager (MTP) or
+   `adb pull /sdcard/Download/MiniPcap/`. Captures being recorded never appear there. Turn the setting
+   off to keep pairs private and move individual ones from *Saved captures*.
 
 Reading a capture on a computer:
 
