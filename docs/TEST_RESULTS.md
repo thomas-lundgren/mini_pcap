@@ -160,6 +160,26 @@ cached tail) — it reached capacity without any drop.
   ~110–180 Mbit/s TCP, throughput/RTT changes within run-to-run spread. Provisional P2 budgets still need sign-off.
 - No "minimal overhead" claim is made: independent review and P2 (energy, thermal, cellular, snaplen sweep) are open.
 
+## Release build outdoors, cellular (2026-10-23)
+
+Same release build (`513c3a6`), bike ride, cellular only (LTE + NR NSA), Spotify/Maps traffic, three sessions
+(14 min, 22 min, 10 min) each stopped from the notification. Analyzed locally; copies on the host deleted; no
+coordinates inspected.
+
+| Check | Result |
+|---|---|
+| `validate` | all 3 ok (14,642 / 39,835 / 14,724 packets); SESSION_END complete (user_stop); 0 capture drops, 0 metadata drops, no capture errors |
+| Attribution | 603 / 510 / 294 flows; 94–98 % resolved at first lookup, rest unresolved (invalid UID); > 99 % of packets with an app |
+| Location (fused) | ~1 Hz (median interval 0.76–1.0 s); median accuracy 3.3–5.9 m; speed and bearing present |
+| GNSS | median 39–44 satellites used outdoors (8 in the mostly stationary session) |
+| Radio | serving-cell changes recorded (20 and 14 in the moving sessions); LTE serving RSRP −139 … −59 dBm; 0–12 neighbors per report; NR NSA secondary cells reported; one 23 s out-of-service period (service_state 1, data suspended) with matching drop in traffic and a location/GNSS gap |
+| Network | cellular+vpn throughout, never lost |
+
+Findings: (1) ~97 % of RADIO_STATE records are caused by `data_activity` changes (in/out/inout), 260–510 records
+per session — small, but it drowns technology changes; consider not emitting RADIO_STATE for data activity alone.
+(2) NR secondary cells in CELL_MEASUREMENT carry only `ss_sinr = csi_sinr = 0` and level 0 from the modem (no RSRP);
+NR ss_rsrp/ss_rsrq is available only in SIGNAL_STRENGTH. Values are recorded as reported, not interpreted.
+
 ## Release build on device (2026-10-23)
 
 Signed release APK built from `0490a83` (versionName 0.1.0, release keystore outside the repo), installed on the
