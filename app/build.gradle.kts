@@ -1,6 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// Release signing is read from a properties file outside the repository
+// (storeFile, storePassword, keyAlias, keyPassword). Without it the release APK is unsigned.
+val signingProps = Properties().apply {
+    val f = file(providers.gradleProperty("minipcap.signing").orNull
+        ?: "${System.getProperty("user.home")}/.android/minipcap-release.properties")
+    if (f.isFile) f.inputStream().use { load(it) }
 }
 
 android {
@@ -25,8 +35,18 @@ android {
         }
     }
 
+    signingConfigs {
+        if (signingProps.containsKey("storeFile")) create("release") {
+            storeFile = file(signingProps.getProperty("storeFile"))
+            storePassword = signingProps.getProperty("storePassword")
+            keyAlias = signingProps.getProperty("keyAlias")
+            keyPassword = signingProps.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
