@@ -1,5 +1,7 @@
 # MiniPcap — per-app packet logger for Android (no root)
 
+<p align="center"><img src="docs/images/poster.svg" width="100%" alt="MiniPcap: one phone captures all traffic in one capture; the analyzer splits it into apps (Maps, Music, Browser, Chat) and their individual flows, and lines every packet up with position, signal strength, serving cell and motion on the same timeline"></p>
+
 MiniPcap records the network traffic of selected Android apps on the phone itself (an on-device VPN,
 no root). Each session produces a **PCAP** file that opens directly in Wireshark, with uplink and
 downlink marked on every packet, and a compact binary **metadata** file. That file holds position,
